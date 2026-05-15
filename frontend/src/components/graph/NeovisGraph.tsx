@@ -232,16 +232,15 @@ export function NeovisGraph({ kbId }: GraphViewerProps) {
 
         {/* Legend */}
         {!loading && entityTypes.length > 0 && (
-          <div className="absolute top-3 left-3 bg-white/95 backdrop-blur rounded-lg border border-slate-200 p-2.5 shadow-sm z-10 max-w-[160px]">
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Entity Types</p>
-            <div className="flex flex-col gap-1">
+          <div className="absolute bottom-3 right-3 bg-white/90 backdrop-blur rounded-lg border border-slate-200 px-2.5 py-2 shadow-sm z-10">
+            <div className="flex flex-wrap gap-x-3 gap-y-1 max-w-[280px]">
               {entityTypes.map(type => (
-                <div key={type} className="flex items-center gap-2">
+                <div key={type} className="flex items-center gap-1.5">
                   <span
-                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    className="w-2 h-2 rounded-full shrink-0"
                     style={{ backgroundColor: TYPE_COLORS[type] || '#aaa' }}
                   />
-                  <span className="text-[10px] text-slate-600 capitalize truncate">{type}</span>
+                  <span className="text-[9px] text-slate-500 capitalize">{type}</span>
                 </div>
               ))}
             </div>
