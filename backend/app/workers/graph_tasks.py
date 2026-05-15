@@ -122,6 +122,29 @@ async def _build_graph_async(document_id: str) -> dict:
                 db=db,
             )
 
+            # Generate document insights (same as PageIndex — for the Insights tab)
+            from app.workers.tree_tasks import _generate_insights
+            from app.models.document_tree import DocumentTree
+            insights = await _generate_insights(provider, text, doc.filename)
+
+            # Store insights in document_trees table (frontend reads from here)
+            existing_tree = await db.execute(
+                select(DocumentTree).where(DocumentTree.document_id == doc_uuid)
+            )
+            doc_tree = existing_tree.scalar_one_or_none()
+            if doc_tree is None:
+                doc_tree = DocumentTree(
+                    document_id=doc_uuid,
+                    tree_json={"nodes": [], "mode": "graph"},
+                    llm_model_used=provider.model,
+                    token_count=0,
+                    **insights,
+                )
+                db.add(doc_tree)
+            else:
+                for k, v in insights.items():
+                    setattr(doc_tree, k, v)
+
             # Mark document ready
             doc.status = DocumentStatus.ready
             await db.commit()

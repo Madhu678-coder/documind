@@ -210,6 +210,94 @@ function VectorInsightsPanel({ docId }: { docId: string }) {
   );
 }
 
+// ── Graph Insights Panel ──────────────────────────────────────────────────────
+
+function GraphInsightsPanel({ kbId }: { kbId: string }) {
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!kbId) return;
+    import('../api/client').then(({ apiClient }) => {
+      apiClient.get(`/knowledge-bases/${kbId}/graph/stats`)
+        .then(({ data }) => { setStats(data); setLoading(false); })
+        .catch(() => setLoading(false));
+    });
+  }, [kbId]);
+
+  if (loading) {
+    return <div className="animate-pulse space-y-3">{[1,2,3].map(i => <div key={i} className="h-16 rounded-lg bg-slate-100" />)}</div>;
+  }
+
+  if (!stats || stats.total_nodes === 0) {
+    return (
+      <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
+        <p className="text-sm font-medium text-orange-800">No graph data yet</p>
+        <p className="text-xs text-orange-700 mt-1">Upload documents to extract entities and relationships.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Stats cards */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-xl border border-slate-200 bg-white p-3 text-center">
+          <p className="text-2xl font-bold text-orange-600">{stats.total_nodes}</p>
+          <p className="text-xs text-slate-500">Entities</p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-3 text-center">
+          <p className="text-2xl font-bold text-blue-600">{stats.total_edges}</p>
+          <p className="text-xs text-slate-500">Relationships</p>
+        </div>
+      </div>
+
+      {/* Entity types */}
+      {stats.entity_types && Object.keys(stats.entity_types).length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold text-slate-700 mb-3">Entity Types</p>
+          <div className="space-y-2">
+            {Object.entries(stats.entity_types).sort((a: any, b: any) => b[1] - a[1]).map(([type, count]: any) => (
+              <div key={type} className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: TYPE_COLORS_MAP[type] || '#aaa' }} />
+                  <span className="text-xs text-slate-600 capitalize">{type}</span>
+                </div>
+                <span className="text-xs font-medium text-slate-800">{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Top entities */}
+      {stats.top_entities && stats.top_entities.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold text-slate-700 mb-3">Top Entities</p>
+          <div className="space-y-2">
+            {stats.top_entities.map((entity: any, i: number) => (
+              <div key={i} className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLORS_MAP[entity.type] || '#aaa' }} />
+                  <span className="text-xs text-slate-700 truncate">{entity.name}</span>
+                </div>
+                <span className="text-[10px] text-slate-400 shrink-0 ml-2">{entity.mentions} mentions</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TYPE_COLORS_MAP: Record<string, string> = {
+  organization: '#4e79a7', person: '#f28e2b', role: '#e15759',
+  policy: '#76b7b2', process: '#59a14f', category: '#edc948',
+  location: '#9c755f', amount: '#ff9da7', department: '#b07aa1',
+  document: '#bab0ac', concept: '#4e79a7', rule: '#e15759',
+};
+
 // ── PageIndex Structure Panel ─────────────────────────────────────────────────
 
 function PageIndexStructurePanel({ docId, docTitle }: { docId: string; docTitle?: string }) {
@@ -485,11 +573,8 @@ export function DocumentViewerPage() {
                     </div>
                   </div>
                 ) : ragMode === 'graph' ? (
-                  <div className="p-6 text-sm text-slate-500">
-                    <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
-                      <p className="text-sm font-medium text-orange-800 mb-1">Graph RAG Mode</p>
-                      <p className="text-xs text-orange-700">Entities and relationships have been extracted into a knowledge graph. Use the Graph tab to explore connections, or ask relational questions in Chat.</p>
-                    </div>
+                  <div className="p-4">
+                    <DocumentSummary docId={doc.id} />
                   </div>
                 ) : (
                   <div className="p-4">
