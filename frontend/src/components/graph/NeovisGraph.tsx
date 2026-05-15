@@ -4,6 +4,7 @@ import { apiClient } from '../../api/client';
 
 interface GraphViewerProps {
   kbId: string;
+  docId?: string;
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -21,7 +22,7 @@ const TYPE_COLORS: Record<string, string> = {
   rule: '#e15759',
 };
 
-export function NeovisGraph({ kbId }: GraphViewerProps) {
+export function NeovisGraph({ kbId, docId }: GraphViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +38,9 @@ export function NeovisGraph({ kbId }: GraphViewerProps) {
     setLoading(true);
     setError(null);
 
-    apiClient.get(`/knowledge-bases/${kbId}/graph/visualization`)
+    apiClient.get(`/knowledge-bases/${kbId}/graph/visualization`, {
+        params: docId ? { doc_id: docId } : undefined,
+      })
       .then(({ data }) => {
         if (!data.nodes || data.nodes.length === 0) {
           setError('No graph data yet. Upload documents to build the knowledge graph.');

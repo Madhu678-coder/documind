@@ -549,7 +549,7 @@ export function DocumentViewerPage() {
                     </a>
                   </div>
                   <div className="flex-1">
-                    <NeovisGraph kbId={kb?.id || ''} />
+                    <NeovisGraph kbId={kb?.id || ''} docId={doc.id} />
                   </div>
                 </div>
               ) : (

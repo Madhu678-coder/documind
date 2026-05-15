@@ -121,17 +121,35 @@ async def list_graph_nodes(
 @router.get("/{kb_id}/graph/visualization", response_model=GraphVisualizationOut)
 async def get_graph_visualization(
     kb_id: uuid.UUID,
+    doc_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get the full graph in a format suitable for frontend visualization (D3/vis.js/cytoscape).
+    Get the full graph in a format suitable for frontend visualization.
+    Optionally filter by document ID to show only entities from a specific document.
     """
     await _get_kb_or_403(kb_id, current_user.workspace_id, db)
 
     from app.services.graph.neo4j_client import get_full_graph
 
     graph_data = await get_full_graph(str(kb_id))
+
+    # Filter by document if doc_id provided
+    if doc_id:
+        doc_id_str = str(doc_id)
+        # Filter nodes that have this doc in source_doc_ids
+        filtered_nodes = [
+            n for n in graph_data.get("nodes", [])
+            if doc_id_str in (n.get("source_doc_ids") or [])
+        ]
+        filtered_node_names = {n["name"] for n in filtered_nodes}
+        # Filter edges where both source and target are in filtered nodes
+        filtered_edges = [
+            e for e in graph_data.get("edges", [])
+            if e.get("source") in filtered_node_names and e.get("target") in filtered_node_names
+        ]
+        graph_data = {"nodes": filtered_nodes, "edges": filtered_edges}
 
     # Type → color mapping
     type_colors = {
