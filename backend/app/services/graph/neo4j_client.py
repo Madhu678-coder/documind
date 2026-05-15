@@ -313,24 +313,48 @@ async def search_entities(
         })
 
 
-async def get_full_graph(kb_id: str) -> dict[str, list[dict]]:
-    """Get the entire graph for a KB (for visualization)."""
-    nodes_query = """
-        MATCH (e:Entity {kb_id: $kb_id})
-        RETURN e.name AS name, e.entity_type AS entity_type,
-               e.description AS description, e.mention_count AS mention_count,
-               e.source_doc_ids AS source_doc_ids
-        ORDER BY e.mention_count DESC
-    """
-    edges_query = """
-        MATCH (s:Entity {kb_id: $kb_id})-[r]->(t:Entity {kb_id: $kb_id})
-        RETURN s.name AS source, t.name AS target, type(r) AS type,
-               r.description AS description, r.weight AS weight
-        ORDER BY r.weight DESC
-    """
+async def get_full_graph(kb_id: str, doc_id: str | None = None) -> dict[str, list[dict]]:
+    """Get the graph for a KB, optionally filtered by document ID."""
+    if doc_id:
+        nodes_query = """
+            MATCH (e:Entity {kb_id: $kb_id})
+            WHERE $doc_id IN e.source_doc_ids
+            RETURN e.name AS name, e.entity_type AS entity_type,
+                   e.description AS description, e.mention_count AS mention_count,
+                   e.source_doc_ids AS source_doc_ids
+            ORDER BY e.mention_count DESC
+        """
+        nodes = await run_query(nodes_query, {"kb_id": kb_id, "doc_id": doc_id})
 
-    nodes = await run_query(nodes_query, {"kb_id": kb_id})
-    edges = await run_query(edges_query, {"kb_id": kb_id})
+        # Get edges between filtered nodes only
+        node_names = [n["name"] for n in nodes]
+        if node_names:
+            edges_query = """
+                MATCH (s:Entity {kb_id: $kb_id})-[r]->(t:Entity {kb_id: $kb_id})
+                WHERE s.name IN $node_names AND t.name IN $node_names
+                RETURN s.name AS source, t.name AS target, type(r) AS type,
+                       r.description AS description, r.weight AS weight
+                ORDER BY r.weight DESC
+            """
+            edges = await run_query(edges_query, {"kb_id": kb_id, "node_names": node_names})
+        else:
+            edges = []
+    else:
+        nodes_query = """
+            MATCH (e:Entity {kb_id: $kb_id})
+            RETURN e.name AS name, e.entity_type AS entity_type,
+                   e.description AS description, e.mention_count AS mention_count,
+                   e.source_doc_ids AS source_doc_ids
+            ORDER BY e.mention_count DESC
+        """
+        edges_query = """
+            MATCH (s:Entity {kb_id: $kb_id})-[r]->(t:Entity {kb_id: $kb_id})
+            RETURN s.name AS source, t.name AS target, type(r) AS type,
+                   r.description AS description, r.weight AS weight
+            ORDER BY r.weight DESC
+        """
+        nodes = await run_query(nodes_query, {"kb_id": kb_id})
+        edges = await run_query(edges_query, {"kb_id": kb_id})
 
     return {"nodes": nodes, "edges": edges}
 
