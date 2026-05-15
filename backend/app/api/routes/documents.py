@@ -337,3 +337,48 @@ async def get_document_file(
         media_type=media_type,
         headers={"Content-Disposition": f'inline; filename="{doc.filename}"'},
     )
+
+
+@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    doc_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a document and all its related data (tree, chunks, etc.)."""
+    result = await db.execute(
+        select(Document).where(
+            Document.id == doc_id,
+            Document.workspace_id == current_user.workspace_id,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    # Delete related records (order matters for foreign keys)
+    from app.models.document_tree import DocumentTree
+    from app.models.document_chunk import DocumentChunk
+
+    await db.execute(select(DocumentTree).where(DocumentTree.document_id == doc_id))
+    tree = (await db.execute(select(DocumentTree).where(DocumentTree.document_id == doc_id))).scalar_one_or_none()
+    if tree:
+        await db.delete(tree)
+
+    # Delete chunks
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
+
+    # Delete the document itself
+    await db.delete(doc)
+    await db.commit()
+
+    # Try to delete from S3 (best effort)
+    try:
+        from app.services.document.storage import FileStorageService
+        storage = FileStorageService()
+        storage.delete(doc.file_path)
+    except Exception:
+        pass  # S3 cleanup is best-effort
+
+    logger.info("Document deleted", extra={"doc_id": str(doc_id)})

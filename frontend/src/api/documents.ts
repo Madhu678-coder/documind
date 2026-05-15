@@ -33,6 +33,10 @@ export async function getDocument(doc_id: string): Promise<Document> {
   return data;
 }
 
+export async function deleteDocument(doc_id: string): Promise<void> {
+  await apiClient.delete(`/documents/${doc_id}`);
+}
+
 export async function createKnowledgeBase(name: string, description?: string, settings?: KBSettings): Promise<KnowledgeBase> {
   const { data } = await apiClient.post<KnowledgeBase>('/knowledge-bases', { name, description, settings });
   return data;

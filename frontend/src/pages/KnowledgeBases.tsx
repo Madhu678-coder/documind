@@ -168,10 +168,11 @@ function HitTestingPanel({ kb }: { kb: KnowledgeBase }) {
 
 // ── Document Table ────────────────────────────────────────────────────────────
 
-function DocumentTable({ docs, ragMode, onViewDoc }: {
+function DocumentTable({ docs, ragMode, onViewDoc, onDeleteDoc }: {
   docs: Document[];
   ragMode: 'pageindex' | 'vector' | 'wiki';
   onViewDoc: (doc: Document) => void;
+  onDeleteDoc?: (doc: Document) => void;
 }) {
   if (docs.length === 0) return null;
 
@@ -226,6 +227,10 @@ function DocumentTable({ docs, ragMode, onViewDoc }: {
                       <Eye className="h-4 w-4" />
                     </button>
                   )}
+                  <button onClick={() => onDeleteDoc?.(doc)} title="Delete document"
+                    className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 transition-colors">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
               </td>
             </tr>
@@ -330,7 +335,16 @@ function KbDetail({ kb, onBack, onRefresh, onDeleteKb }: {
               <p className="text-xs text-slate-500">Upload your first document using the drop zone above</p>
             </div>
           ) : (
-            <DocumentTable docs={displayDocs} ragMode={ragMode} onViewDoc={(doc) => navigate(`/documents/${doc.id}?from=/knowledge-bases`)} />
+            <DocumentTable docs={displayDocs} ragMode={ragMode} onViewDoc={(doc) => navigate(`/documents/${doc.id}?from=/knowledge-bases`)} onDeleteDoc={async (doc) => {
+              if (!confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
+              try {
+                const { deleteDocument } = await import('../api/documents');
+                await deleteDocument(doc.id);
+                loadDocuments(kb.id);
+              } catch (e: any) {
+                alert(e?.response?.data?.detail || 'Failed to delete document');
+              }
+            }} />
           )}
 
           {ragMode === 'vector' && readyDocs.length > 0 && <HitTestingPanel kb={kb} />}
