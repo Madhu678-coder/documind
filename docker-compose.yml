@@ -1,0 +1,178 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: documind-postgres
+    environment:
+      POSTGRES_USER: documind
+      POSTGRES_PASSWORD: documind
+      POSTGRES_DB: documind
+    ports:
+      - "5440:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U documind"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - documind-network
+
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5-community
+    container_name: documind-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/documind123
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"   # Browser UI
+      - "7687:7687"   # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - documind-network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: documind-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - documind-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: documind-backend
+    ports:
+      - "8010:8010"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://documind:documind@postgres:5432/documind
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - AWS_PROFILE=AI-COE-Madhu-202533538512
+      - AWS_REGION=us-east-1
+      - AWS_BEDROCK_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - S3_BUCKET=${S3_BUCKET:-documind-app-storage-2026}
+      - SECRET_KEY=${SECRET_KEY:-local-dev-secret-key-change-in-production}
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=documind123
+      - CORS_ORIGINS=http://localhost:5180,http://localhost:5173
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - ~/.aws:/root/.aws  # Mount AWS credentials (needs write for SSO cache)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 5 &&
+        echo 'Running migrations...' &&
+        alembic upgrade head &&
+        echo 'Seeding default admin user...' &&
+        python seed_admin.py &&
+        echo 'Starting backend server...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
+      "
+    networks:
+      - documind-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Celery Worker (for evaluations)
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: documind-celery
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://documind:documind@postgres:5432/documind
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - AWS_PROFILE=AI-COE-Madhu-202533538512
+      - AWS_REGION=us-east-1
+      - AWS_BEDROCK_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - S3_BUCKET=${S3_BUCKET:-documind-app-storage-2026}
+      - SECRET_KEY=${SECRET_KEY:-local-dev-secret-key-change-in-production}
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=documind123
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - ~/.aws:/root/.aws  # Mount AWS credentials (needs write for SSO cache)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    command: celery -A app.workers worker -Q default,eval_queue --concurrency=8 --loglevel=info
+    networks:
+      - documind-network
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: documind-frontend
+    ports:
+      - "5180:5180"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0 --port 5180
+    networks:
+      - documind-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  neo4j_data:
+
+networks:
+  documind-network:
+    driver: bridge
