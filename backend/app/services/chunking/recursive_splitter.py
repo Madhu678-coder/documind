@@ -112,6 +112,26 @@ class RecursiveCharacterSplitter:
             else:
                 final_chunks.append(curr)
 
+        # Build a page number map from [Page N] markers in the text
+        import re
+        page_markers: list[tuple[int, int]] = []  # (char_position, page_number)
+        for match in re.finditer(r'\[Page (\d+)\]', text):
+            page_markers.append((match.start(), int(match.group(1))))
+
+        def _get_page_for_position(pos: int) -> int:
+            """Find the page number for a given character position."""
+            if not page_markers:
+                # Fallback: estimate ~3000 chars/page
+                return max(1, (pos // 3000) + 1)
+            # Find the last page marker before this position
+            page = 1
+            for marker_pos, marker_page in page_markers:
+                if marker_pos <= pos:
+                    page = marker_page
+                else:
+                    break
+            return page
+
         # Build result with positional metadata
         result: list[dict] = []
         char_pos = 0
@@ -125,9 +145,8 @@ class RecursiveCharacterSplitter:
             end = start + len(chunk_text)
             char_pos = max(char_pos, start)
 
-            # Estimate page number based on position (rough approximation: ~3000 chars/page)
-            chars_per_page = 3000
-            page_number = max(1, (start // chars_per_page) + 1)
+            # Get page number from [Page N] markers
+            page_number = _get_page_for_position(start)
 
             result.append({
                 "text": chunk_text,
