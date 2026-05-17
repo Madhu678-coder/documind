@@ -230,12 +230,14 @@ async def get_entity_neighborhood(
             name: connected.name,
             entity_type: connected.entity_type,
             description: connected.description,
-            mention_count: connected.mention_count
+            mention_count: connected.mention_count,
+            source_doc_ids: connected.source_doc_ids
         }) + COLLECT(DISTINCT {
             name: start.name,
             entity_type: start.entity_type,
             description: start.description,
-            mention_count: start.mention_count
+            mention_count: start.mention_count,
+            source_doc_ids: start.source_doc_ids
         }) AS nodeList,
         COLLECT(DISTINCT {
             source: startNode(r).name,
