@@ -206,7 +206,8 @@ async def get_entity_neighborhood(
             name: node.name,
             entity_type: node.entity_type,
             description: node.description,
-            mention_count: node.mention_count
+            mention_count: node.mention_count,
+            source_doc_ids: node.source_doc_ids
         }) AS nodeList, allRels
         UNWIND allRels AS rel
         RETURN nodeList,
