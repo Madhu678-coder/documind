@@ -183,11 +183,13 @@ export function PDFViewer({ url, currentPage = 1, highlight, onPageChange }: PDF
   }, [currentPage, url]);
 
   // Fallback: attempt highlighting when page or highlight changes, regardless of text layer events
+  // If highlight not found on current page, try next page (page numbering can be off by 1)
   useEffect(() => {
     if (!highlight || !containerRef.current || !blobUrl) return;
 
     const attempts = [500, 1200, 2500];
     let cancelled = false;
+    let triedNextPage = false;
 
     const tryHighlight = (attemptIndex: number) => {
       if (cancelled || attemptIndex >= attempts.length || !containerRef.current) return;
@@ -199,6 +201,14 @@ export function PDFViewer({ url, currentPage = 1, highlight, onPageChange }: PDF
           const found = highlightTextLayer(containerRef.current, highlight);
           if (found) return;
         }
+
+        // If all attempts failed and we haven't tried next page yet, flip to next page
+        if (attemptIndex === attempts.length - 1 && !triedNextPage && page < numPages) {
+          triedNextPage = true;
+          goTo(page + 1);
+          return;
+        }
+
         tryHighlight(attemptIndex + 1);
       }, attempts[attemptIndex]);
     };
