@@ -81,11 +81,23 @@ async def generate_answer_from_graph(
 
     # Enrich citations with graph node info
     # Build a map of entity names to their source doc IDs
+    # Fetch source_doc_ids directly from Neo4j for all context nodes
     node_doc_map: dict[str, str] = {}
-    for node in graph_context.nodes:
-        src_ids = node.get("source_doc_ids") or []
-        if src_ids:
-            node_doc_map[node["name"].lower()] = src_ids[0]
+    try:
+        from app.services.graph.neo4j_client import run_query
+        node_names = [n["name"] for n in graph_context.nodes if n.get("name")]
+        if node_names:
+            doc_id_results = await run_query(
+                "MATCH (e:Entity) WHERE e.name IN $names AND e.source_doc_ids IS NOT NULL "
+                "RETURN e.name AS name, e.source_doc_ids AS source_doc_ids",
+                {"names": node_names}
+            )
+            for r in doc_id_results:
+                src_ids = r.get("source_doc_ids") or []
+                if src_ids:
+                    node_doc_map[r["name"].lower()] = src_ids[0]
+    except Exception:
+        pass  # Best effort — fall back to empty map
 
     # Get the first available doc_id from any node in context
     default_doc_id = ""
@@ -98,8 +110,26 @@ async def generate_answer_from_graph(
     enriched: list[Citation] = []
     if raw_citations:
         for citation in raw_citations:
-            # Try to find doc_id from the citation's node_id (entity name)
-            doc_id = node_doc_map.get(citation.node_id.lower(), default_doc_id)
+            # Try to find doc_id: check node_id, then doc_name, then partial match
+            doc_id = ""
+            # Exact match on node_id
+            doc_id = node_doc_map.get(citation.node_id.lower(), "")
+            # Try doc_name if node_id didn't match
+            if not doc_id:
+                doc_id = node_doc_map.get(citation.doc_name.lower(), "")
+            # Try partial match on any node name
+            if not doc_id:
+                for name, did in node_doc_map.items():
+                    if name in citation.node_id.lower() or citation.node_id.lower() in name:
+                        doc_id = did
+                        break
+                    if name in citation.doc_name.lower() or citation.doc_name.lower() in name:
+                        doc_id = did
+                        break
+            # Fallback
+            if not doc_id:
+                doc_id = default_doc_id
+
             enriched.append(Citation(
                 doc_name=citation.doc_name,
                 section_title=citation.section_title,
