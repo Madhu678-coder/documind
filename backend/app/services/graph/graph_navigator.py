@@ -100,12 +100,21 @@ async def extract_query_entities(query: str, llm: "LLMProvider") -> list[str]:
         return words[:5]
 
 
+@dataclass
+class ResolvedNode:
+    """Lightweight node object for graph navigation (avoids SQLAlchemy model issues)."""
+    name: str
+    entity_type: str = ""
+    description: str = ""
+    mention_count: int = 1
+
+
 async def resolve_entities(
     query_entities: list[str],
     kb_id: uuid.UUID,
     embedding_provider: "EmbeddingProvider",
     db: "AsyncSession",
-) -> list[GraphNode]:
+) -> list[ResolvedNode]:
     """
     Resolve extracted entity names to actual graph nodes using Neo4j full-text search.
     """
@@ -116,15 +125,14 @@ async def resolve_entities(
 
     results = await search_entities(str(kb_id), query_entities, limit=_TOP_K_NODES)
 
-    # Convert to GraphNode-like objects for compatibility
-    resolved: list[GraphNode] = []
+    resolved: list[ResolvedNode] = []
     for r in results:
-        node = GraphNode.__new__(GraphNode)
-        node.name = r["name"]
-        node.entity_type = r.get("entity_type", "")
-        node.description = r.get("description", "")
-        node.mention_count = r.get("mention_count", 1)
-        resolved.append(node)
+        resolved.append(ResolvedNode(
+            name=r["name"],
+            entity_type=r.get("entity_type", ""),
+            description=r.get("description", ""),
+            mention_count=r.get("mention_count", 1) or 1,
+        ))
 
     logger.info(
         "Entities resolved via Neo4j",
@@ -137,19 +145,19 @@ async def _fallback_text_search(
     query_entities: list[str],
     kb_id: uuid.UUID,
     db: "AsyncSession",
-) -> list[GraphNode]:
+) -> list[ResolvedNode]:
     """Fallback: find nodes by text search in Neo4j when full-text index fails."""
     from app.services.graph.neo4j_client import search_entities
 
     results = await search_entities(str(kb_id), query_entities, limit=_TOP_K_NODES)
-    resolved: list[GraphNode] = []
+    resolved: list[ResolvedNode] = []
     for r in results:
-        node = GraphNode.__new__(GraphNode)
-        node.name = r["name"]
-        node.entity_type = r.get("entity_type", "")
-        node.description = r.get("description", "")
-        node.mention_count = r.get("mention_count", 1)
-        resolved.append(node)
+        resolved.append(ResolvedNode(
+            name=r["name"],
+            entity_type=r.get("entity_type", ""),
+            description=r.get("description", ""),
+            mention_count=r.get("mention_count", 1) or 1,
+        ))
     return resolved
 
 
