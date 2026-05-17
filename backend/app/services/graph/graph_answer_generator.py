@@ -77,27 +77,45 @@ async def generate_answer_from_graph(
     answer_text, raw_citations = _parse_answer_and_citations(response.content)
 
     # Enrich citations with graph node info
+    # Build a map of entity names to their source doc IDs
+    node_doc_map: dict[str, str] = {}
+    for node in graph_context.nodes:
+        src_ids = node.get("source_doc_ids") or []
+        if src_ids:
+            node_doc_map[node["name"].lower()] = src_ids[0]
+
+    # Get the first available doc_id from any node in context
+    default_doc_id = ""
+    for node in graph_context.nodes:
+        src_ids = node.get("source_doc_ids") or []
+        if src_ids:
+            default_doc_id = src_ids[0]
+            break
+
     enriched: list[Citation] = []
     if raw_citations:
         for citation in raw_citations:
+            # Try to find doc_id from the citation's node_id (entity name)
+            doc_id = node_doc_map.get(citation.node_id.lower(), default_doc_id)
             enriched.append(Citation(
                 doc_name=citation.doc_name,
                 section_title=citation.section_title,
                 page_number=1,
                 node_id=citation.node_id,
                 verbatim_excerpt=citation.verbatim_excerpt,
-                doc_id="",  # graphs don't link to specific documents
+                doc_id=doc_id,
             ))
     else:
         # Auto-generate citations from start nodes
         for node in graph_context.nodes[:5]:
+            src_ids = node.get("source_doc_ids") or []
             enriched.append(Citation(
                 doc_name=node["name"],
                 section_title=node["entity_type"],
                 page_number=1,
                 node_id=node["name"],
                 verbatim_excerpt=node["description"],
-                doc_id="",
+                doc_id=src_ids[0] if src_ids else default_doc_id,
             ))
 
     return GeneratedAnswer(content=answer_text, citations=enriched)

@@ -193,6 +193,7 @@ async def traverse_graph(
                 "entity_type": node_data.get("entity_type", ""),
                 "description": node_data.get("description", ""),
                 "mention_count": node_data.get("mention_count", 1),
+                "source_doc_ids": node_data.get("source_doc_ids", []),
             })
 
     context_edges = []

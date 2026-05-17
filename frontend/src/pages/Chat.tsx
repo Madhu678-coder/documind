@@ -48,7 +48,7 @@ export function Chat() {
   };
 
   const handleCitationClick = (docId: string, page: number, excerpt?: string) => {
-    if (!docId || docId.length < 10) return;  // skip empty or invalid UUIDs
+    if (!docId || docId.length < 10) return;
     const params = new URLSearchParams({ from: '/chat' });
     if (page > 1) params.set('page', String(page));
     if (excerpt) params.set('highlight', excerpt.slice(0, 150));
