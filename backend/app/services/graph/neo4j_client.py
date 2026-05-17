@@ -91,6 +91,8 @@ async def upsert_entity(
     entity_type: str,
     description: str,
     doc_id: str,
+    page_number: int = 1,
+    source_text: str = "",
     properties: dict | None = None,
 ) -> str:
     """Create or update an entity node. Returns the node element ID."""
@@ -101,6 +103,8 @@ async def upsert_entity(
             e.description = $description,
             e.source_doc_ids = [$doc_id],
             e.mention_count = 1,
+            e.page_number = $page_number,
+            e.source_text = $source_text,
             e.created_at = datetime()
         ON MATCH SET
             e.mention_count = e.mention_count + 1,
@@ -114,6 +118,11 @@ async def upsert_entity(
                 THEN $description
                 ELSE e.description
             END,
+            e.source_text = CASE
+                WHEN size($source_text) > size(coalesce(e.source_text, ''))
+                THEN $source_text
+                ELSE e.source_text
+            END,
             e.updated_at = datetime()
         RETURN elementId(e) as node_id
     """
@@ -123,6 +132,8 @@ async def upsert_entity(
         "entity_type": entity_type,
         "description": description or "",
         "doc_id": doc_id,
+        "page_number": page_number,
+        "source_text": source_text or "",
     })
     return results[0]["node_id"] if results else ""
 
@@ -207,7 +218,9 @@ async def get_entity_neighborhood(
             entity_type: node.entity_type,
             description: node.description,
             mention_count: node.mention_count,
-            source_doc_ids: node.source_doc_ids
+            source_doc_ids: node.source_doc_ids,
+            page_number: node.page_number,
+            source_text: node.source_text
         }) AS nodeList, allRels
         UNWIND allRels AS rel
         RETURN nodeList,

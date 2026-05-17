@@ -39,6 +39,7 @@ extract all entities and relationships to build a knowledge graph.
 - type: one of "organization", "person", "role", "policy", "process", "category", \
 "location", "amount", "department", "document", "concept", "rule"
 - description: 1-2 sentence description of what this entity is/does
+- source_text: the exact sentence or phrase from the document where this entity is mentioned (verbatim quote, max 100 chars)
 
 **Relationships** — For each provide:
 - source: exact entity name (must match an entity you extracted)
@@ -47,6 +48,7 @@ extract all entities and relationships to build a knowledge graph.
 "varies_by", "includes", "belongs_to", "processed_by", "managed_by", "defines")
 - description: 1 sentence explaining this relationship
 - weight: strength 1-10 (10 = core/definitive relationship, 1 = weak/implied)
+- source_text: the exact sentence from the document that establishes this relationship (verbatim quote, max 100 chars)
 
 **Rules:**
 - Extract 5-20 entities per chunk depending on content density
@@ -65,17 +67,29 @@ Return ONLY valid JSON:
 # ── Text Chunking ─────────────────────────────────────────────────────────────
 
 
-def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> list[str]:
-    """Split text into overlapping chunks for parallel extraction."""
-    if len(text) <= chunk_size:
-        return [text]
+def _split_into_chunks(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> list[tuple[str, int]]:
+    """Split text into overlapping chunks with page number tracking.
+    Returns list of (chunk_text, start_page_number) tuples."""
+    import re
 
-    chunks: list[str] = []
+    if len(text) <= chunk_size:
+        # Find first page marker
+        page_match = re.search(r'\[Page (\d+)\]', text)
+        start_page = int(page_match.group(1)) if page_match else 1
+        return [(text, start_page)]
+
+    chunks: list[tuple[str, int]] = []
     start = 0
     while start < len(text):
         end = start + chunk_size
         chunk = text[start:end]
-        chunks.append(chunk)
+
+        # Find the page number at or before this chunk's start
+        preceding_text = text[:start + 200]
+        page_markers = re.findall(r'\[Page (\d+)\]', preceding_text)
+        start_page = int(page_markers[-1]) if page_markers else 1
+
+        chunks.append((chunk, start_page))
         start += chunk_size - overlap
     return chunks
 
@@ -89,9 +103,10 @@ async def _extract_from_chunk(
     total_chunks: int,
     filename: str,
     provider: "LLMProvider",
+    start_page: int = 1,
 ) -> dict[str, list[dict]]:
-    """Extract entities and relationships from a single chunk."""
-    chunk_label = f" (chunk {chunk_index + 1}/{total_chunks})" if total_chunks > 1 else ""
+    """Extract entities and relationships from a single chunk. Tags with page number."""
+    chunk_label = f" (chunk {chunk_index + 1}/{total_chunks}, page ~{start_page})" if total_chunks > 1 else ""
     messages = [
         {
             "role": "user",
@@ -134,6 +149,7 @@ def _parse_extraction_response(raw: str) -> dict[str, list[dict]]:
                     "name": str(e["name"]).strip(),
                     "type": str(e["type"]).strip().lower(),
                     "description": str(e.get("description", "")).strip(),
+                    "source_text": str(e.get("source_text", "")).strip()[:150],
                 })
 
         # Validate relationships
@@ -150,6 +166,7 @@ def _parse_extraction_response(raw: str) -> dict[str, list[dict]]:
                         "type": str(r["type"]).strip().lower().replace(" ", "_"),
                         "description": str(r.get("description", "")).strip(),
                         "weight": min(max(float(r.get("weight", 5)), 1.0), 10.0),
+                        "source_text": str(r.get("source_text", "")).strip()[:150],
                     })
 
         return {"entities": valid_entities, "relationships": valid_relationships}
@@ -242,11 +259,17 @@ async def extract_graph(
     # Process chunks in parallel (limited concurrency)
     semaphore = asyncio.Semaphore(_MAX_PARALLEL)
 
-    async def _extract_with_limit(chunk: str, idx: int) -> dict:
+    async def _extract_with_limit(chunk_text: str, idx: int, page: int) -> dict:
         async with semaphore:
-            return await _extract_from_chunk(chunk, idx, len(chunks), filename, provider)
+            result = await _extract_from_chunk(chunk_text, idx, len(chunks), filename, provider, start_page=page)
+            # Tag entities with page number
+            for entity in result.get("entities", []):
+                entity["page_number"] = page
+            for rel in result.get("relationships", []):
+                rel["page_number"] = page
+            return result
 
-    tasks = [_extract_with_limit(chunk, i) for i, chunk in enumerate(chunks)]
+    tasks = [_extract_with_limit(chunk_text, i, page) for i, (chunk_text, page) in enumerate(chunks)]
     results = await asyncio.gather(*tasks)
 
     # Collect all entities and relationships
@@ -320,6 +343,8 @@ async def build_graph(
             entity_type=entity["type"],
             description=entity["description"],
             doc_id=doc_id,
+            page_number=entity.get("page_number", 1),
+            source_text=entity.get("source_text", ""),
         )
         nodes_created += 1
 

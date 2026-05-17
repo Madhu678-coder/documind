@@ -80,24 +80,28 @@ async def generate_answer_from_graph(
     answer_text, raw_citations = _parse_answer_and_citations(response.content)
 
     # Enrich citations with graph node info
-    # Build a map of entity names to their source doc IDs
-    # Fetch source_doc_ids directly from Neo4j for all context nodes
+    # Fetch source_doc_ids, page_number, source_text directly from Neo4j
     node_doc_map: dict[str, str] = {}
+    node_page_map: dict[str, int] = {}
+    node_text_map: dict[str, str] = {}
     try:
         from app.services.graph.neo4j_client import run_query
         node_names = [n["name"] for n in graph_context.nodes if n.get("name")]
         if node_names:
             doc_id_results = await run_query(
                 "MATCH (e:Entity) WHERE e.name IN $names AND e.source_doc_ids IS NOT NULL "
-                "RETURN e.name AS name, e.source_doc_ids AS source_doc_ids",
+                "RETURN e.name AS name, e.source_doc_ids AS source_doc_ids, "
+                "e.page_number AS page_number, e.source_text AS source_text",
                 {"names": node_names}
             )
             for r in doc_id_results:
                 src_ids = r.get("source_doc_ids") or []
                 if src_ids:
                     node_doc_map[r["name"].lower()] = src_ids[0]
+                node_page_map[r["name"].lower()] = r.get("page_number") or 1
+                node_text_map[r["name"].lower()] = r.get("source_text") or ""
     except Exception:
-        pass  # Best effort — fall back to empty map
+        pass
 
     # Get the first available doc_id from any node in context
     default_doc_id = ""
@@ -133,22 +137,23 @@ async def generate_answer_from_graph(
             enriched.append(Citation(
                 doc_name=citation.doc_name,
                 section_title=citation.section_title,
-                page_number=1,
+                page_number=node_page_map.get(citation.node_id.lower(), 1),
                 node_id=citation.node_id,
-                verbatim_excerpt=citation.verbatim_excerpt,
+                verbatim_excerpt=node_text_map.get(citation.node_id.lower(), "") or citation.verbatim_excerpt,
                 doc_id=doc_id,
             ))
     else:
         # Auto-generate citations from start nodes
         for node in graph_context.nodes[:5]:
             src_ids = node.get("source_doc_ids") or []
+            name_lower = node["name"].lower()
             enriched.append(Citation(
                 doc_name=node["name"],
                 section_title=node["entity_type"],
-                page_number=1,
+                page_number=node_page_map.get(name_lower, 1),
                 node_id=node["name"],
-                verbatim_excerpt=node["description"],
-                doc_id=src_ids[0] if src_ids else default_doc_id,
+                verbatim_excerpt=node_text_map.get(name_lower, "") or node["description"],
+                doc_id=node_doc_map.get(name_lower, "") or (src_ids[0] if src_ids else default_doc_id),
             ))
 
     return GeneratedAnswer(content=answer_text, citations=enriched)
