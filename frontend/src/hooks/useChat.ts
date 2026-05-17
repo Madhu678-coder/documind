@@ -2,6 +2,17 @@ import { createSession, deleteSession, getMessages, getSessions, sendMessage } f
 import { useChatStore } from '../stores/chatStore';
 import type { ChatMessage } from '../types';
 
+// Fallback for non-secure contexts (HTTP) where crypto.randomUUID is unavailable
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 export function useChat() {
   const store = useChatStore();
 
@@ -43,7 +54,7 @@ export function useChat() {
     if (!activeSessionId) return;
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       session_id: activeSessionId,
       role: 'user',
       content,
@@ -58,7 +69,7 @@ export function useChat() {
       const data = await response.json();
 
       const assistantMessage: ChatMessage = {
-        id: data.id ?? crypto.randomUUID(),
+        id: data.id ?? generateId(),
         session_id: activeSessionId,
         role: 'assistant',
         content: data.content ?? '',
