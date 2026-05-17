@@ -183,13 +183,20 @@ export function PDFViewer({ url, currentPage = 1, highlight, onPageChange }: PDF
   }, [currentPage, url]);
 
   // Fallback: attempt highlighting when page or highlight changes, regardless of text layer events
-  // If highlight not found on current page, try next page (page numbering can be off by 1)
+  // If highlight not found on current page, try next page ONCE (page numbering can be off by 1)
   useEffect(() => {
     if (!highlight || !containerRef.current || !blobUrl) return;
 
+    // Clean the highlight text — remove PDF artifacts
+    const cleanHighlight = highlight
+      .replace(/Page Break\s*---?\s*/gi, '')
+      .replace(/\n/g, ' ')
+      .trim();
+
+    if (!cleanHighlight || cleanHighlight.length < 10) return;
+
     const attempts = [500, 1200, 2500];
     let cancelled = false;
-    let triedNextPage = false;
 
     const tryHighlight = (attemptIndex: number) => {
       if (cancelled || attemptIndex >= attempts.length || !containerRef.current) return;
@@ -198,17 +205,9 @@ export function PDFViewer({ url, currentPage = 1, highlight, onPageChange }: PDF
         if (cancelled || !containerRef.current) return;
         const spans = containerRef.current.querySelectorAll('.react-pdf__Page__textContent span');
         if (spans.length > 0) {
-          const found = highlightTextLayer(containerRef.current, highlight);
+          const found = highlightTextLayer(containerRef.current, cleanHighlight);
           if (found) return;
         }
-
-        // If all attempts failed and we haven't tried next page yet, flip to next page
-        if (attemptIndex === attempts.length - 1 && !triedNextPage && page < numPages) {
-          triedNextPage = true;
-          goTo(page + 1);
-          return;
-        }
-
         tryHighlight(attemptIndex + 1);
       }, attempts[attemptIndex]);
     };
@@ -230,6 +229,14 @@ export function PDFViewer({ url, currentPage = 1, highlight, onPageChange }: PDF
   const handleTextLayerRendered = useCallback(() => {
     if (!highlight || !containerRef.current) return;
 
+    // Clean PDF artifacts from highlight text
+    const cleanHighlight = highlight
+      .replace(/Page Break\s*---?\s*/gi, '')
+      .replace(/\n/g, ' ')
+      .trim();
+
+    if (!cleanHighlight || cleanHighlight.length < 10) return;
+
     // Retry highlighting with increasing delays — text layer may be re-rendered
     const attempts = [200, 500, 1000, 2000];
     let found = false;
@@ -241,13 +248,12 @@ export function PDFViewer({ url, currentPage = 1, highlight, onPageChange }: PDF
         if (!containerRef.current) return;
         const spans = containerRef.current.querySelectorAll('.react-pdf__Page__textContent span');
         if (spans.length > 0) {
-          const result = highlightTextLayer(containerRef.current, highlight);
+          const result = highlightTextLayer(containerRef.current, cleanHighlight);
           if (result) {
             found = true;
             return;
           }
         }
-        // Try again with next delay
         tryHighlight(attemptIndex + 1);
       }, attempts[attemptIndex]);
     };
