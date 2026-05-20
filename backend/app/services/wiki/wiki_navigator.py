@@ -82,7 +82,7 @@ def _build_toc(wiki_pages: list[Any]) -> str:
     """Build a compact table-of-contents string for the LLM."""
     lines = []
     for page in wiki_pages:
-        summary = (page.summary or "").replace("\n", " ")[:120]
+        summary = (page.summary or "").replace("\n", " ")
         lines.append(f"id={page.id} | {page.page_type} | {page.title}: {summary}")
     return "\n".join(lines)
 
