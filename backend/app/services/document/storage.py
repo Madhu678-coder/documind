@@ -18,6 +18,13 @@ class FileStorageService:
     """
 
     def __init__(self):
+        # If AWS_PROFILE is set to empty string, unset it so boto3 uses
+        # credential chain (env vars: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+        # instead of trying to look up an empty profile name.
+        import os as _os
+        if not _os.environ.get("AWS_PROFILE"):
+            _os.environ.pop("AWS_PROFILE", None)
+
         session_kwargs = {}
         if settings.aws_profile:
             session_kwargs["profile_name"] = settings.aws_profile

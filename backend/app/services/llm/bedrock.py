@@ -15,12 +15,35 @@ from app.services.llm.provider import LLMProvider, LLMResponse
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+# Region-specific inference profiles — confirmed via aws bedrock list-inference-profiles.
+# ap-south-1 must use either an APAC (apac.) or Global (global.) inference profile.
+# Direct on-demand invocation of newer Claude models is NOT supported in ap-south-1.
+_REGIONAL_DEFAULTS: dict[str, str] = {
+    "us-east-1":      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us-east-2":      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us-west-2":      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "ap-south-1":     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "ap-northeast-1": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "ap-northeast-2": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "ap-southeast-1": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "ap-southeast-2": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "eu-west-1":      "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "eu-central-1":   "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "eu-west-3":      "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+}
 _MAX_RETRIES = 3
 _RETRYABLE_ERRORS = {"ThrottlingException", "ModelNotReadyException", "ServiceUnavailableException"}
 
 
 def _build_client():
     """Build a boto3 bedrock-runtime client using the correct credential chain."""
+    import os as _os
+    # If AWS_PROFILE is set to empty string, remove it so boto3 falls back
+    # to env var credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+    if not _os.environ.get("AWS_PROFILE"):
+        _os.environ.pop("AWS_PROFILE", None)
+
     session_kwargs: dict = {}
     if settings.aws_profile:
         # Local dev: use named SSO profile from ~/.aws/config
@@ -32,14 +55,21 @@ def _build_client():
 
 class BedrockProvider:
     """
-    Default LLMProvider backed by AWS Bedrock (Claude Sonnet 4.5).
+    Default LLMProvider backed by AWS Bedrock (Claude).
 
     Credential chain:
     - Local dev: AWS_PROFILE env var → SSO short-lived tokens via ~/.aws
     - Production: EC2 instance role via IMDS (no static credentials)
+
+    The default model is chosen based on AWS_BEDROCK_REGION so the correct
+    cross-region inference prefix (us. / eu.) or direct model ID is used.
     """
 
-    def __init__(self, model: str = _DEFAULT_MODEL):
+    def __init__(self, model: str | None = None):
+        # Pick a sensible default based on the configured Bedrock region
+        if model is None:
+            region = settings.aws_bedrock_region or settings.aws_region or "us-east-1"
+            model = _REGIONAL_DEFAULTS.get(region, _DEFAULT_MODEL)
         self.model = model
         self._client = _build_client()
 

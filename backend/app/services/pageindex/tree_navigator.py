@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.llm.provider import LLMProvider
+from app.services.pageindex.content_retriever import build_node_page_ranges
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ class NavigationResult:
     selected_node_ids: list[str]
     rationale: dict[str, str]
     confidence: float
+    # Page ranges for each selected node — used by content_retriever at query time
+    page_ranges: dict[str, str] = field(default_factory=dict)
 
 
 # ── Tree Utilities ────────────────────────────────────────────────────────────
@@ -348,6 +351,13 @@ async def navigate(
     else:
         result = await _navigate_two_level(query, trees, llm, conv_context)
 
+    # Populate page_ranges for every selected node so content_retriever
+    # can fetch actual page content at answer-generation time
+    for doc_id, tree in trees:
+        if result.selected_node_ids:
+            ranges = build_node_page_ranges(result.selected_node_ids, tree)
+            result.page_ranges.update(ranges)
+
     # Cache the result
     await _cache_navigation(query + conv_context, trees, result)
 
@@ -355,14 +365,21 @@ async def navigate(
 
 
 def _build_nav_context(history: list[dict] | None) -> str:
-    """Build a brief conversation context string for navigation (last 3 turns)."""
+    """Build a brief conversation context string for navigation.
+
+    Uses the last 3 complete turns (6 messages = 3 user+assistant pairs)
+    so the navigator can disambiguate follow-up queries like "what about
+    the next section?" or "expand on that".
+    Each message is truncated to 200 chars to stay within prompt budget.
+    """
     if not history:
         return ""
-    recent = history[-3:]  # last 3 turns for navigation (keep it short)
+    # Take last 6 messages (= 3 full turns), not 3 messages (= 1.5 turns)
+    recent = history[-6:]
     lines = []
     for msg in recent:
         role = msg.get("role", "user").capitalize()
-        content = msg.get("content", "")[:200]  # truncate long messages
+        content = msg.get("content", "")[:200]  # truncate each message
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 

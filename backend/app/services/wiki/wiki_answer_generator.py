@@ -23,12 +23,13 @@ async def generate_answer_from_wiki(
     selected_pages: list[Any],  # list[WikiPage]
     history: list[dict],
     llm: "LLMProvider",
+    all_pages: list[Any] | None = None,  # all wiki pages in KB for wikilink following
 ) -> GeneratedAnswer:
     """
     Generate a cited answer from selected wiki pages.
 
-    Reuses the same citation system prompt and parsing logic as PageIndex,
-    so the frontend receives identical citation structures across all RAG modes.
+    Follows [[wikilinks]] in selected pages (1 level deep) to include
+    referenced pages in the context for more complete answers.
 
     Citations use the wiki page id as node_id and the first source_doc_id as doc_id,
     so frontend deep-links go to the originating document.
@@ -39,9 +40,25 @@ async def generate_answer_from_wiki(
             citations=[],
         )
 
-    # Build context from selected wiki pages
+    # Follow wikilinks (1 level deep) — add referenced pages to context
+    import re
+    pages_to_use = list(selected_pages)
+    if all_pages:
+        selected_ids = {str(p.id) for p in selected_pages}
+        all_pages_map = {p.title.lower(): p for p in all_pages}
+
+        for page in selected_pages:
+            # Find [[wikilinks]] in content
+            links = re.findall(r'\[\[([^\]]+)\]\]', page.content or "")
+            for link_title in links:
+                linked_page = all_pages_map.get(link_title.lower())
+                if linked_page and str(linked_page.id) not in selected_ids:
+                    pages_to_use.append(linked_page)
+                    selected_ids.add(str(linked_page.id))
+
+    # Build context from selected + linked wiki pages
     sections_parts: list[str] = []
-    for page in selected_pages:
+    for page in pages_to_use:
         source_count = len(page.source_doc_ids) if page.source_doc_ids else 0
         sections_parts.append(
             f"[Wiki: {page.title}] (type: {page.page_type}, sources: {source_count} doc(s))\n"

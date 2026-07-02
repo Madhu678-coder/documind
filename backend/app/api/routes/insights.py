@@ -81,6 +81,36 @@ async def get_document_insights(
             ],
         }
 
+    if rag_mode == "openkb":
+        # OpenKB mode: return the compiled wiki pages sourced from this document
+        from app.models.openkb_page import OpenKBPage
+        openkb_result = await db.execute(
+            select(OpenKBPage).where(
+                OpenKBPage.kb_id == document.kb_id,
+            ).order_by(OpenKBPage.page_category, OpenKBPage.title)
+        )
+        all_openkb_pages = openkb_result.scalars().all()
+        doc_id_str = str(doc_id)
+        doc_pages = [p for p in all_openkb_pages if doc_id_str in (p.source_doc_ids or [])]
+        return {
+            "doc_id": str(doc_id),
+            "kb_id": str(document.kb_id),
+            "rag_mode": "openkb",
+            "page_count": len(doc_pages),
+            "summary_pages": [
+                {"id": str(p.id), "title": p.title, "summary": p.summary, "doc_type": p.doc_type}
+                for p in doc_pages if p.page_category == "summary"
+            ],
+            "concept_pages": [
+                {"id": str(p.id), "title": p.title, "summary": p.summary}
+                for p in doc_pages if p.page_category == "concept"
+            ],
+            "entity_pages": [
+                {"id": str(p.id), "title": p.title, "summary": p.summary, "page_type": p.page_type}
+                for p in doc_pages if p.page_category == "entity"
+            ],
+        }
+
     if rag_mode == "vector":
         # Return chunk-based insights for Vector RAG documents
         chunks_result = await db.execute(

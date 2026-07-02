@@ -35,6 +35,8 @@ Your markdown-formatted answer with [citation:1], [citation:2] markers...
 
 # Maximum number of prior conversation turns to include as context
 MAX_CONTEXT_TURNS = 5
+# Max chars per message when building context (prevents single huge response from dominating)
+_MAX_CONTENT_CHARS_PER_MSG = 800
 
 
 @dataclass
@@ -89,15 +91,57 @@ def extract_nodes_text(node_ids: list[str], tree: dict) -> list[dict]:
 
 
 def _build_context_from_history(history: list[dict]) -> str:
-    """Format the last MAX_CONTEXT_TURNS message turns as context string."""
-    # Take only the last MAX_CONTEXT_TURNS turns
-    recent = history[-MAX_CONTEXT_TURNS:]
+    """Format the last MAX_CONTEXT_TURNS turns as a plain-text context block.
+
+    Takes the last MAX_CONTEXT_TURNS * 2 messages (= MAX_CONTEXT_TURNS complete
+    user+assistant pairs). Each message is truncated to _MAX_CONTENT_CHARS_PER_MSG
+    to prevent long assistant answers from dominating the context window.
+    """
+    # Each "turn" = user + assistant → take 2x messages for N turns
+    recent = history[-(MAX_CONTEXT_TURNS * 2):]
     lines = []
     for msg in recent:
         role = msg.get("role", "user").capitalize()
         content = msg.get("content", "")
+        if len(content) > _MAX_CONTENT_CHARS_PER_MSG:
+            content = content[:_MAX_CONTENT_CHARS_PER_MSG] + "…"
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _build_messages_with_history(
+    history: list[dict],
+    current_query: str,
+    sections_context: str,
+) -> list[dict]:
+    """Build the messages array using native multi-turn format.
+
+    Instead of flattening everything into one user message, we use the LLM's
+    native alternating user/assistant format so Claude can properly track
+    what was said in each turn. The document sections are appended to the
+    LAST user message so the model sees them alongside the current query.
+
+    Structure:
+      [user, assistant, user, assistant, ..., user(current + sections)]
+    """
+    recent = history[-(MAX_CONTEXT_TURNS * 2):]
+    messages: list[dict] = []
+
+    for i, msg in enumerate(recent):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if len(content) > _MAX_CONTENT_CHARS_PER_MSG:
+            content = content[:_MAX_CONTENT_CHARS_PER_MSG] + "…"
+        messages.append({"role": role, "content": content})
+
+    # Final user message: current query + document sections
+    final_content = (
+        f"{current_query}\n\n"
+        f"Relevant document sections:\n{sections_context}"
+    )
+    messages.append({"role": "user", "content": final_content})
+
+    return messages
 
 
 def _build_sections_context(nodes: list[dict], doc_name: str) -> str:
@@ -211,16 +255,8 @@ async def generate_answer(
 
     sections_context = "\n\n---\n\n".join(sections_parts) if sections_parts else "No relevant sections found."
 
-    # Build conversation context from last MAX_CONTEXT_TURNS turns
-    conv_context = _build_context_from_history(history)
-
-    user_content = (
-        f"Prior conversation:\n{conv_context}\n\n"
-        f"Current query: {query}\n\n"
-        f"Relevant document sections:\n{sections_context}"
-    )
-
-    messages = [{"role": "user", "content": user_content}]
+    # Build native multi-turn messages with truncated history
+    messages = _build_messages_with_history(history, query, sections_context)
     response = await llm.complete(messages, system_prompt=_CITATION_SYSTEM_PROMPT)
 
     answer_text, citations = _parse_answer_and_citations(response.content)
@@ -261,14 +297,8 @@ async def stream_answer(
             )
 
     sections_context = "\n\n---\n\n".join(sections_parts) if sections_parts else "No relevant sections found."
-    conv_context = _build_context_from_history(history)
 
-    user_content = (
-        f"Prior conversation:\n{conv_context}\n\n"
-        f"Current query: {query}\n\n"
-        f"Relevant document sections:\n{sections_context}"
-    )
-
-    messages = [{"role": "user", "content": user_content}]
+    # Native multi-turn messages with truncated history
+    messages = _build_messages_with_history(history, query, sections_context)
     async for chunk in llm.stream(messages, system_prompt=_CITATION_SYSTEM_PROMPT):
         yield chunk

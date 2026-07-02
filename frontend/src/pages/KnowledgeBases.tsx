@@ -30,7 +30,7 @@ function fmt_bytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function getKbRagMode(kb: KnowledgeBase): 'pageindex' | 'vector' | 'wiki' | 'graph' {
+function getKbRagMode(kb: KnowledgeBase): 'pageindex' | 'vector' | 'wiki' | 'graph' | 'openkb' {
   return kb.settings?.rag_mode || kb.rag_mode || 'pageindex';
 }
 
@@ -59,6 +59,14 @@ function RagModeBadge({ ragMode }: { ragMode?: string }) {
       <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 border border-orange-200 px-2 py-0.5 text-xs font-medium text-orange-700">
         <Share2 className="h-3 w-3" />
         Graph RAG
+      </span>
+    );
+  }
+  if (mode === 'openkb') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 border border-teal-200 px-2 py-0.5 text-xs font-medium text-teal-700">
+        <BookOpen className="h-3 w-3" />
+        OpenKB
       </span>
     );
   }
@@ -313,11 +321,17 @@ function KbDetail({ kb, onBack, onRefresh, onDeleteKb }: {
           {(
             ragMode === 'wiki'
               ? (['documents', 'wiki', 'settings'] as const)
+              : ragMode === 'openkb'
+              ? (['documents', 'openkb', 'settings'] as const)
               : (['documents', 'settings'] as const)
           ).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium capitalize transition-colors ${activeTab === tab ? (ragMode === 'wiki' && tab === 'wiki' ? 'bg-violet-600 text-white shadow-sm' : 'bg-[var(--dm-primary)] text-white shadow-sm') : 'text-slate-600 hover:bg-slate-100'}`}>
-              {tab === 'wiki' ? 'Wiki Pages' : tab}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium capitalize transition-colors ${activeTab === tab
+                ? (ragMode === 'wiki' && tab === 'wiki') || (ragMode === 'openkb' && tab === 'openkb')
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'bg-[var(--dm-primary)] text-white shadow-sm'
+                : 'text-slate-600 hover:bg-slate-100'}`}>
+              {tab === 'wiki' ? 'Wiki Pages' : tab === 'openkb' ? 'Tools' : tab}
             </button>
           ))}
         </div>
@@ -349,6 +363,10 @@ function KbDetail({ kb, onBack, onRefresh, onDeleteKb }: {
 
           {ragMode === 'vector' && readyDocs.length > 0 && <HitTestingPanel kb={kb} />}
         </>
+      )}
+
+      {activeTab === 'openkb' && ragMode === 'openkb' && (
+        <OpenKBToolsPanel kbId={kb.id} kbName={kb.name} />
       )}
 
       {activeTab === 'wiki' && ragMode === 'wiki' && (
@@ -393,6 +411,278 @@ function KbDetail({ kb, onBack, onRefresh, onDeleteKb }: {
           </div>
         </div>
       )}
+
+    </div>
+  );
+}
+
+// ── OpenKB Tools Panel ────────────────────────────────────────────────────────
+
+function OpenKBToolsPanel({ kbId, kbName }: { kbId: string; kbName: string }) {
+  // Lint state
+  const [lintLoading, setLintLoading] = useState(false);
+  const [lintResult, setLintResult] = useState<any | null>(null);
+
+  // Skill state
+  const [skillName, setSkillName] = useState('');
+  const [skillIntent, setSkillIntent] = useState('');
+  const [skillLoading, setSkillLoading] = useState(false);
+  const [skillContent, setSkillContent] = useState<string | null>(null);
+
+  // Deck state
+  const [deckName, setDeckName] = useState('');
+  const [deckIntent, setDeckIntent] = useState('');
+  const [deckLoading, setDeckLoading] = useState(false);
+
+  const runLint = async () => {
+    setLintLoading(true);
+    setLintResult(null);
+    try {
+      const { data } = await apiClient.get(`/knowledge-bases/${kbId}/openkb/lint`);
+      setLintResult(data);
+    } catch (e: any) {
+      setLintResult({ error: e?.response?.data?.detail ?? 'Lint failed' });
+    } finally {
+      setLintLoading(false);
+    }
+  };
+
+  const generateSkill = async () => {
+    if (!skillName.trim() || !skillIntent.trim()) return;
+    setSkillLoading(true);
+    setSkillContent(null);
+    try {
+      const { data } = await apiClient.post(`/knowledge-bases/${kbId}/openkb/skills`, {
+        skill_name: skillName.trim(),
+        intent: skillIntent.trim(),
+      });
+      setSkillContent(data.content);
+    } catch (e: any) {
+      alert(e?.response?.data?.detail ?? 'Skill generation failed');
+    } finally {
+      setSkillLoading(false);
+    }
+  };
+
+  const downloadSkill = () => {
+    if (!skillContent) return;
+    const blob = new Blob([skillContent], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${skillName || 'skill'}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const generateDeck = async () => {
+    if (!deckName.trim() || !deckIntent.trim()) return;
+    setDeckLoading(true);
+    try {
+      const resp = await apiClient.post(
+        `/knowledge-bases/${kbId}/openkb/decks`,
+        { deck_name: deckName.trim(), intent: deckIntent.trim() },
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([resp.data], { type: 'text/html' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${deckName.replace(/\s+/g, '_')}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(e?.response?.data?.detail ?? 'Deck generation failed');
+    } finally {
+      setDeckLoading(false);
+    }
+  };
+
+  const exportMarkdown = async () => {
+    try {
+      const resp = await apiClient.get(`/knowledge-bases/${kbId}/openkb/export`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([resp.data], { type: 'text/markdown' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${kbName.replace(/\s+/g, '_')}_openkb_wiki.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert('Export failed');
+    }
+  };
+
+  const severityColor: Record<string, string> = {
+    error:   'text-red-700 bg-red-50 border-red-200',
+    warning: 'text-amber-700 bg-amber-50 border-amber-200',
+    info:    'text-blue-700 bg-blue-50 border-blue-200',
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+
+      {/* ── Wiki Lint ── */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">Wiki Lint</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Check for broken wikilinks, orphaned pages, missing summaries, and duplicate titles</p>
+          </div>
+          <button
+            onClick={runLint}
+            disabled={lintLoading}
+            className="flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50 transition-colors"
+          >
+            {lintLoading ? (
+              <><span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />Running…</>
+            ) : 'Run Lint'}
+          </button>
+        </div>
+
+        {lintResult && !lintResult.error && (
+          <div className="p-5 space-y-4">
+            {/* Summary */}
+            <div className="flex items-center gap-3">
+              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold border ${lintResult.passed ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                {lintResult.passed ? '✓ Passed' : '✗ Failed'}
+              </span>
+              <span className="text-xs text-slate-500">{lintResult.pages_checked} pages checked</span>
+              {lintResult.error_count > 0 && <span className="text-xs font-medium text-red-600">{lintResult.error_count} error{lintResult.error_count !== 1 ? 's' : ''}</span>}
+              {lintResult.warning_count > 0 && <span className="text-xs font-medium text-amber-600">{lintResult.warning_count} warning{lintResult.warning_count !== 1 ? 's' : ''}</span>}
+              {lintResult.issues?.length === 0 && <span className="text-xs text-green-600">No issues found</span>}
+            </div>
+
+            {/* Issues */}
+            {lintResult.issues?.length > 0 && (
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {lintResult.issues.map((issue: any, i: number) => (
+                  <div key={i} className={`rounded-lg border px-3 py-2 text-xs ${severityColor[issue.severity] ?? severityColor.info}`}>
+                    <div className="flex items-start gap-2">
+                      <span className="font-semibold uppercase shrink-0">{issue.severity}</span>
+                      <div>
+                        <span className="font-medium">{issue.page_title}</span>
+                        <span className="text-slate-600 ml-1">({issue.check})</span>
+                        <p className="mt-0.5 opacity-80">{issue.detail}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {lintResult?.error && (
+          <p className="p-4 text-sm text-red-600">{lintResult.error}</p>
+        )}
+      </div>
+
+      {/* ── Skill Factory ── */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+        <div className="px-5 py-4 border-b border-slate-200 bg-indigo-50">
+          <h3 className="text-sm font-semibold text-indigo-900">Skill Factory</h3>
+          <p className="text-xs text-indigo-700 mt-0.5">Generate a portable SKILL.md agent skill from this knowledge base — loadable by Claude Code, Codex, or Gemini CLI</p>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Skill Name</label>
+              <input
+                value={skillName}
+                onChange={e => setSkillName(e.target.value)}
+                placeholder="e.g. hr-policy-expert"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Intent</label>
+              <input
+                value={skillIntent}
+                onChange={e => setSkillIntent(e.target.value)}
+                placeholder="e.g. Answer HR policy questions"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all"
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={generateSkill}
+              disabled={skillLoading || !skillName.trim() || !skillIntent.trim()}
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+            >
+              {skillLoading ? (
+                <><span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />Generating…</>
+              ) : 'Generate SKILL.md'}
+            </button>
+            {skillContent && (
+              <button
+                onClick={downloadSkill}
+                className="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-indigo-50 px-4 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 transition-colors"
+              >
+                ↓ Download SKILL.md
+              </button>
+            )}
+          </div>
+          {skillContent && (
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 max-h-48 overflow-y-auto">
+              <pre className="text-xs text-indigo-900 whitespace-pre-wrap font-mono leading-relaxed">{skillContent.slice(0, 800)}{skillContent.length > 800 ? '\n…(truncated — download for full content)' : ''}</pre>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Deck Generator ── */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+        <div className="px-5 py-4 border-b border-slate-200 bg-purple-50">
+          <h3 className="text-sm font-semibold text-purple-900">Deck Generator</h3>
+          <p className="text-xs text-purple-700 mt-0.5">Generate a self-contained HTML slide deck from this knowledge base</p>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Deck Name</label>
+              <input
+                value={deckName}
+                onChange={e => setDeckName(e.target.value)}
+                placeholder="e.g. HR Policy Overview"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Intent</label>
+              <input
+                value={deckIntent}
+                onChange={e => setDeckIntent(e.target.value)}
+                placeholder="e.g. Onboard new employees"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all"
+              />
+            </div>
+          </div>
+          <button
+            onClick={generateDeck}
+            disabled={deckLoading || !deckName.trim() || !deckIntent.trim()}
+            className="flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50 transition-colors"
+          >
+            {deckLoading ? (
+              <><span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />Generating…</>
+            ) : '⬇ Generate & Download Deck'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Export ── */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+        <div className="px-5 py-4 border-b border-slate-200 bg-teal-50 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-teal-900">Export Wiki</h3>
+            <p className="text-xs text-teal-700 mt-0.5">Download all compiled pages as a single Markdown file — compatible with Obsidian, Notion, and any markdown editor</p>
+          </div>
+          <button
+            onClick={exportMarkdown}
+            className="flex items-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-xs font-medium text-white hover:bg-teal-700 transition-colors"
+          >
+            ↓ Export .md
+          </button>
+        </div>
+      </div>
 
     </div>
   );
@@ -543,7 +833,7 @@ function KbCreationWizard({ onClose, onCreated, createKb }: {
         top_k: topK, score_threshold: scoreThresholdEnabled ? scoreThreshold : null,
         rerank_enabled: false, hybrid_semantic_weight: semanticWeight,
         embedding_provider: embeddingProvider, embedding_model: embeddingModel,
-      } : ragMode === 'wiki' ? { rag_mode: 'wiki' } : ragMode === 'graph' ? { rag_mode: 'graph' } : { rag_mode: 'pageindex' };
+      } : ragMode === 'wiki' ? { rag_mode: 'wiki' } : ragMode === 'graph' ? { rag_mode: 'graph' } : ragMode === 'openkb' ? { rag_mode: 'openkb', pageindex_threshold: 20 } : { rag_mode: 'pageindex' };
       await createKb(name.trim(), description.trim() || undefined, settings);
       onCreated();
     } finally { setCreating(false); }
@@ -575,6 +865,7 @@ function KbCreationWizard({ onClose, onCreated, createKb }: {
             { value: 'vector', icon: <Database className="h-5 w-5 text-emerald-600" />, bg: 'bg-emerald-100', title: 'Vector RAG', subtitle: 'Semantic Mode', desc: 'Documents chunked and embedded. Best for large collections with diverse topics.', badge: 'Embedding required', badgeCls: 'bg-amber-100 text-amber-700', selCls: 'border-emerald-500 bg-emerald-50 shadow-md', chkCls: 'bg-emerald-500' },
             { value: 'wiki', icon: <BookOpen className="h-5 w-5 text-violet-600" />, bg: 'bg-violet-100', title: 'Wiki', subtitle: 'Living Knowledge Base', desc: 'LLM builds and maintains cross-document wiki pages on entities, concepts, and processes. Topics compound as more documents arrive — the richer it gets over time.', badge: 'Best for growing libraries', badgeCls: 'bg-violet-100 text-violet-700', selCls: 'border-violet-500 bg-violet-50 shadow-md', chkCls: 'bg-violet-500' },
             { value: 'graph', icon: <Share2 className="h-5 w-5 text-orange-600" />, bg: 'bg-orange-100', title: 'Graph RAG', subtitle: 'Knowledge Graph', desc: 'Extracts entities and relationships into a connected graph. Best for relational questions — "how does X relate to Y?" and "what requires approval from Z?"', badge: 'Relationship-aware', badgeCls: 'bg-orange-100 text-orange-700', selCls: 'border-orange-500 bg-orange-50 shadow-md', chkCls: 'bg-orange-500' },
+            { value: 'openkb', icon: <BookOpen className="h-5 w-5 text-teal-600" />, bg: 'bg-teal-100', title: 'OpenKB', subtitle: 'Compiled Wiki + PageIndex', desc: 'Compiles documents into a persistent, interlinked wiki with summaries, concept pages, and entity pages. Long PDFs (≥20 pages) use PageIndex tree indexing for precise page-range retrieval.', badge: 'Best for knowledge bases', badgeCls: 'bg-teal-100 text-teal-700', selCls: 'border-teal-500 bg-teal-50 shadow-md', chkCls: 'bg-teal-500' },
           ] as const).map(({ value, icon, bg, title, subtitle, desc, badge, badgeCls, selCls, chkCls }) => (
             <button key={value} type="button" onClick={() => setRagMode(value)}
               className={`relative flex items-start gap-4 rounded-xl border-2 p-4 text-left transition-all ${ragMode === value ? selCls : 'border-slate-200 bg-white hover:border-slate-300'}`}>

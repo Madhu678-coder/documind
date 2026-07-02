@@ -47,7 +47,7 @@ export interface Document {
 }
 
 export interface KBSettings {
-  rag_mode: 'pageindex' | 'vector' | 'wiki';
+  rag_mode: 'pageindex' | 'vector' | 'wiki' | 'graph' | 'openkb';
   index_method?: 'high_quality' | 'economical' | 'hybrid';
   chunk_strategy?: 'recursive' | 'parent_child';
   chunk_size?: number;
@@ -59,6 +59,8 @@ export interface KBSettings {
   hybrid_semantic_weight?: number;
   embedding_provider?: string;
   embedding_model?: string;
+  pageindex_threshold?: number;
+  language?: string;
 }
 
 export interface KnowledgeBase {
@@ -69,7 +71,7 @@ export interface KnowledgeBase {
   document_count: number;
   created_at: string;
   settings?: KBSettings;
-  rag_mode?: 'pageindex' | 'vector' | 'wiki'; // derived from settings by backend
+  rag_mode?: 'pageindex' | 'vector' | 'wiki' | 'graph' | 'openkb'; // derived from settings by backend
 }
 
 export interface WikiPage {

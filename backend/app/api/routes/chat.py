@@ -82,8 +82,12 @@ async def _get_session_or_403(
     return session
 
 
-async def _load_kb_trees(kb_id: uuid.UUID, db: AsyncSession) -> list[tuple[str, str, dict]]:
-    """Load all ready document trees for a KB. Returns (doc_id, filename, tree_json) tuples."""
+async def _load_kb_trees(kb_id: uuid.UUID, db: AsyncSession) -> list[tuple[str, str, dict, list]]:
+    """Load all ready document trees for a KB.
+
+    Returns (doc_id, filename, tree_json, source_pages) tuples.
+    source_pages is the per-page content list for PageIndex page-range retrieval.
+    """
     result = await db.execute(
         select(Document, DocumentTree)
         .join(DocumentTree, DocumentTree.document_id == Document.id)
@@ -93,7 +97,10 @@ async def _load_kb_trees(kb_id: uuid.UUID, db: AsyncSession) -> list[tuple[str, 
         )
     )
     rows = result.all()
-    return [(str(doc.id), doc.filename, tree.tree_json) for doc, tree in rows]
+    return [
+        (str(doc.id), doc.filename, tree.tree_json, tree.source_pages or [])
+        for doc, tree in rows
+    ]
 
 
 async def _add_audit_log(
@@ -289,7 +296,7 @@ async def send_message(
         wiki_pages = wiki_result.scalars().all()
         nav_result = await navigate_wiki(body.content, wiki_pages, llm, history=history)
         selected_pages = [p for p in wiki_pages if str(p.id) in nav_result.selected_page_ids]
-        answer = await generate_answer_from_wiki(body.content, selected_pages, history, llm)
+        answer = await generate_answer_from_wiki(body.content, selected_pages, history, llm, all_pages=wiki_pages)
 
         reasoning_trace_data = {
             "mode": "wiki",
@@ -345,16 +352,69 @@ async def send_message(
             reasoning_trace=reasoning_trace_data,
             node_ids_visited=node_ids_visited,
         )
+    elif rag_mode == "openkb":
+        # OpenKB path — compiled wiki with summary / concept / entity pages
+        from sqlalchemy import select as sa_select
+        from app.models.openkb_page import OpenKBPage
+        from app.services.openkb.navigator import navigate_openkb
+        from app.services.openkb.answer_generator import generate_answer_from_openkb
+
+        all_pages_res = await db.execute(
+            sa_select(OpenKBPage)
+            .where(OpenKBPage.kb_id == session.kb_id)
+            .order_by(OpenKBPage.page_category, OpenKBPage.title)
+        )
+        all_openkb_pages = all_pages_res.scalars().all()
+        nav_result = await navigate_openkb(body.content, all_openkb_pages, llm, history=history)
+        answer = await generate_answer_from_openkb(body.content, nav_result, history, llm)
+
+        reasoning_trace_data = {
+            "mode": "openkb",
+            "pages_retrieved": len(nav_result.selected_pages),
+            "page_ranges_retrieved": len(nav_result.page_range_content),
+            "rationale": nav_result.rationale,
+            "confidence": nav_result.confidence,
+        }
+        node_ids_visited = nav_result.selected_page_ids
+
+        assistant_msg = ChatMessage(
+            session_id=session_id,
+            role="assistant",
+            content=answer.content,
+            citations=[c.to_dict() for c in answer.citations],
+            reasoning_trace=reasoning_trace_data,
+            node_ids_visited=node_ids_visited,
+        )
     else:
-        # Existing PageIndex path
-        # Load document trees for the KB
+        # PageIndex path — hierarchical tree navigation + page-range content retrieval
         trees = await _load_kb_trees(session.kb_id, db)
 
-        # Run tree navigation
-        nav_trees = [(doc_id, tree) for doc_id, _, tree in trees]
+        nav_trees = [(doc_id, tree) for doc_id, _, tree, _ in trees]
         nav_result = await navigate(body.content, nav_trees, llm, history=history)
 
-        # Build trace
+        # ── NEW: Retrieve actual page content for selected nodes ──────────────
+        # Instead of using the truncated text embedded in tree nodes at index time,
+        # we now fetch the full page content from source_pages stored in DocumentTree.
+        # This is the core PageIndex retrieval step.
+        from app.services.pageindex.content_retriever import retrieve_nodes as _retrieve_nodes
+        enriched_trees: list[tuple[str, str, dict, list]] = []
+        for doc_id, doc_name, tree, source_pages in trees:
+            if source_pages and nav_result.selected_node_ids:
+                # Fetch full page content for selected nodes
+                retrieved = _retrieve_nodes(tree, nav_result.selected_node_ids, source_pages)
+                # Inject retrieved content back into tree nodes for answer generator
+                node_map: dict[str, dict] = {}
+                def _idx(nodes: list) -> None:
+                    for n in nodes:
+                        node_map[n["node_id"]] = n
+                        _idx(n.get("children", []))
+                _idx(tree.get("nodes", []))
+                for r in retrieved:
+                    raw_id = r["node_id"].split("::")[-1] if "::" in r["node_id"] else r["node_id"]
+                    if raw_id in node_map and r["content"]:
+                        node_map[raw_id]["text"] = r["content"]  # replace truncated text
+            enriched_trees.append((doc_id, doc_name, tree))
+
         trace = build_trace(
             query=body.content,
             selected_node_ids=nav_result.selected_node_ids,
@@ -363,16 +423,14 @@ async def send_message(
             trees=nav_trees,
         )
 
-        # Generate answer
         answer = await generate_answer(
             query=body.content,
             node_ids=nav_result.selected_node_ids,
-            trees=trees,
+            trees=enriched_trees,
             history=history,
             llm=llm,
         )
 
-        # Store assistant message
         assistant_msg = ChatMessage(
             session_id=session_id,
             role="assistant",
@@ -463,7 +521,7 @@ async def _ws_stream_answer(
     session: ChatSession,
     query: str,
     history: list[dict],
-    trees: list[tuple[str, str, dict]],
+    trees: list[tuple[str, str, dict, list]],  # (doc_id, filename, tree_dict, source_pages)
     db: AsyncSession,
     user: User,
     kb: KnowledgeBase | None = None,
@@ -523,7 +581,7 @@ async def _ws_stream_answer(
         wiki_pages = wiki_result.scalars().all()
         nav_result = await navigate_wiki(query, wiki_pages, llm, history=history)
         selected_pages = [p for p in wiki_pages if str(p.id) in nav_result.selected_page_ids]
-        answer = await generate_answer_from_wiki(query, selected_pages, history, llm)
+        answer = await generate_answer_from_wiki(query, selected_pages, history, llm, all_pages=wiki_pages)
 
         trace_dict = {
             "mode": "wiki",
@@ -591,9 +649,41 @@ async def _ws_stream_answer(
 
         return answer.content, [c for c in answer.citations], trace_dict, node_ids
 
+    elif rag_mode == "openkb":
+        # OpenKB path — compiled wiki with summary / concept / entity pages
+        from sqlalchemy import select as sa_select
+        from app.models.openkb_page import OpenKBPage
+        from app.services.openkb.navigator import navigate_openkb
+        from app.services.openkb.answer_generator import generate_answer_from_openkb
+
+        all_pages_res = await db.execute(
+            sa_select(OpenKBPage)
+            .where(OpenKBPage.kb_id == session.kb_id)
+            .order_by(OpenKBPage.page_category, OpenKBPage.title)
+        )
+        all_openkb_pages = all_pages_res.scalars().all()
+        nav_result = await navigate_openkb(query, all_openkb_pages, llm, history=history)
+        answer = await generate_answer_from_openkb(query, nav_result, history, llm)
+
+        trace_dict = {
+            "mode": "openkb",
+            "pages_retrieved": len(nav_result.selected_pages),
+            "page_ranges_retrieved": len(nav_result.page_range_content),
+            "rationale": nav_result.rationale,
+            "confidence": nav_result.confidence,
+        }
+        node_ids = nav_result.selected_page_ids
+
+        await websocket.send_json({"type": "trace", "data": trace_dict})
+        chunk_size = 5
+        for i in range(0, len(answer.content), chunk_size):
+            await websocket.send_json({"type": "token", "data": answer.content[i:i + chunk_size]})
+        await websocket.send_json({"type": "done", "citations": [c.to_dict() for c in answer.citations]})
+        return answer.content, answer.citations, trace_dict, node_ids
+
     else:
-        # Existing PageIndex path
-        nav_trees = [(doc_id, tree) for doc_id, _, tree in trees]
+        # PageIndex path with real page-range retrieval
+        nav_trees = [(doc_id, tree) for doc_id, _, tree, _ in trees]
         nav_result = await navigate(query, nav_trees, llm, history=history)
 
         trace = build_trace(
@@ -604,25 +694,36 @@ async def _ws_stream_answer(
             trees=nav_trees,
         )
 
-        # Send trace event first
+        # Retrieve actual page content for selected nodes
+        from app.services.pageindex.content_retriever import retrieve_nodes as _retrieve_nodes
+        enriched_trees = []
+        for doc_id, doc_name, tree, source_pages in trees:
+            if source_pages and nav_result.selected_node_ids:
+                node_map: dict[str, dict] = {}
+                def _idx(nodes: list) -> None:
+                    for n in nodes:
+                        node_map[n["node_id"]] = n
+                        _idx(n.get("children", []))
+                _idx(tree.get("nodes", []))
+                for r in _retrieve_nodes(tree, nav_result.selected_node_ids, source_pages):
+                    raw_id = r["node_id"].split("::")[-1] if "::" in r["node_id"] else r["node_id"]
+                    if raw_id in node_map and r["content"]:
+                        node_map[raw_id]["text"] = r["content"]
+            enriched_trees.append((doc_id, doc_name, tree))
+
         await websocket.send_json({"type": "trace", "data": trace.to_dict()})
 
-        # Collect full response first, then parse and stream clean tokens
         full_content = ""
-        async for chunk in stream_answer(query, nav_result.selected_node_ids, trees, history, llm):
+        async for chunk in stream_answer(query, nav_result.selected_node_ids, enriched_trees, history, llm):
             full_content += chunk
 
-        # Parse to extract clean answer and citations
         from app.services.pageindex.answer_generator import _parse_answer_and_citations
         answer_text, citations = _parse_answer_and_citations(full_content)
 
-        # Stream the cleaned answer text in small chunks for better UX
-        chunk_size = 5  # characters per chunk
+        chunk_size = 5
         for i in range(0, len(answer_text), chunk_size):
-            chunk = answer_text[i:i + chunk_size]
-            await websocket.send_json({"type": "token", "data": chunk})
+            await websocket.send_json({"type": "token", "data": answer_text[i:i + chunk_size]})
 
-        # Send done event with citations
         await websocket.send_json({
             "type": "done",
             "citations": [c.to_dict() for c in citations],

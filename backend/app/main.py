@@ -132,6 +132,7 @@ from app.api.routes.model_providers import router as model_providers_router
 from app.api.routes.retrieval import router as retrieval_router
 from app.api.routes.wiki_pages import router as wiki_pages_router
 from app.api.routes.graph import router as graph_router
+from app.api.routes.openkb import router as openkb_router
 app.include_router(health.router)
 app.include_router(auth.router)                    # /auth/login, /auth/logout (legacy)
 app.include_router(auth.router, prefix="/api/v1")  # /api/v1/auth/refresh (frontend expects this)
@@ -145,3 +146,4 @@ app.include_router(model_providers_router, prefix="/api/v1")
 app.include_router(retrieval_router, prefix="/api/v1")
 app.include_router(wiki_pages_router, prefix="/api/v1")
 app.include_router(graph_router, prefix="/api/v1")
+app.include_router(openkb_router, prefix="/api/v1")

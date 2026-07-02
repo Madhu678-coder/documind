@@ -20,7 +20,16 @@ interface PDFViewerProps {
 }
 
 function normalize(s: string) {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+  return s
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    // Replace common PDF special-char artifacts (bullets, dashes, percent signs
+    // that pymupdf/pdfjs emit instead of the original character)
+    .replace(/[%•··–—]/g, ' ')
+    .replace(/[^\w\s@.]/g, ' ')  // keep word chars, whitespace, @ and . (emails)
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Try to highlight text spans. Returns true if any match found. */
@@ -35,53 +44,60 @@ function highlightTextLayer(container: HTMLElement, excerpt: string): boolean {
   if (!excerpt) return false;
 
   const target = normalize(excerpt).slice(0, 120);
-  const firstWords = target.split(' ').slice(0, 4).join(' ');
+  const words = target.split(' ').filter(w => w.length > 3); // only meaningful words
   const spans = Array.from(container.querySelectorAll('.react-pdf__Page__textContent span')) as HTMLElement[];
-
-  console.log('[Highlight] Attempting highlight:', { excerpt: excerpt.slice(0, 80), firstWords, spanCount: spans.length });
 
   if (spans.length === 0) return false; // image PDF — no text layer
 
-  // Strategy 1: Accumulate text and find a window that contains the first words
+  // Build accumulated page text from all spans
   let accumulated = '';
-  const allTexts: string[] = [];
   for (const span of spans) {
-    const text = normalize(span.textContent ?? '');
-    if (text) allTexts.push(text);
-    accumulated += ' ' + text;
+    accumulated += ' ' + normalize(span.textContent ?? '');
   }
   accumulated = accumulated.trim();
 
-  // Find the position of firstWords in accumulated text
-  const matchPos = accumulated.indexOf(firstWords);
-  if (matchPos === -1) {
-    // Strategy 2: Try with just the first 3 words
-    const shorterKey = target.split(' ').slice(0, 3).join(' ');
-    const shortPos = accumulated.indexOf(shorterKey);
-    if (shortPos === -1) {
-      console.log('[Highlight] No match found. First 200 chars of page text:', accumulated.slice(0, 200));
-      return false;
+  // Strategy 1: match first 4 words
+  // Strategy 2: match first 3 words  
+  // Strategy 3: match first 2 words
+  // Strategy 4: match first significant word (> 5 chars)
+  let matchPos = -1;
+  let matchKey = '';
+  const keys = [
+    words.slice(0, 4).join(' '),
+    words.slice(0, 3).join(' '),
+    words.slice(0, 2).join(' '),
+    words.find(w => w.length > 5) ?? '',
+  ].filter(k => k.length > 0);
+
+  for (const key of keys) {
+    const pos = accumulated.indexOf(key);
+    if (pos !== -1) {
+      matchPos = pos;
+      matchKey = key;
+      break;
     }
   }
 
-  // Find which spans contain the matching text
+  if (matchPos === -1) {
+    console.log('[Highlight] No match found. First 200 chars of page text:', accumulated.slice(0, 200));
+    return false;
+  }
+
+  // Map matchPos back to the individual spans
   let charCount = 0;
-  const matchStart = matchPos !== -1 ? matchPos : accumulated.indexOf(target.split(' ').slice(0, 3).join(' '));
-  const matchEnd = matchStart + Math.min(target.length, 300);
+  const matchEnd = matchPos + Math.min(target.length, matchKey.length + 80);
   const toHighlight: HTMLElement[] = [];
 
   for (const span of spans) {
     const text = normalize(span.textContent ?? '');
     if (!text) continue;
     const spanStart = charCount;
-    const spanEnd = charCount + text.length + 1; // +1 for the space separator
+    const spanEnd = charCount + text.length + 1;
     charCount = spanEnd;
 
-    // Check if this span overlaps with the match range
-    if (spanEnd > matchStart && spanStart < matchEnd) {
+    if (spanEnd > matchPos && spanStart < matchEnd) {
       toHighlight.push(span);
     }
-    // Stop after we've well passed the match
     if (spanStart > matchEnd + 50) break;
   }
 

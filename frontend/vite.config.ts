@@ -10,6 +10,12 @@ export default defineConfig({
     },
   },
   server: {
+    watch: {
+      usePolling: true,   // fix for Windows + Docker file watcher
+      interval: 1000,
+    },
+  },
+  server: {
     port: 5180,
     allowedHosts: true,
     headers: {

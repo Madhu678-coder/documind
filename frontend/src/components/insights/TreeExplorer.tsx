@@ -11,6 +11,7 @@ export interface TreeNode {
   page_end: number;
   depth: number;
   text: string;
+  summary?: string;
   children?: TreeNode[];
 }
 
@@ -201,6 +202,10 @@ function PreviewPanel({ node }: PreviewPanelProps) {
     );
   }
 
+  // Strip the section title from the start of the raw text if it duplicates the header
+  const rawText = node.text ?? '';
+  const summary = (node as Record<string, unknown>).summary as string | undefined;
+
   return (
     <motion.div
       key={node.node_id}
@@ -218,11 +223,25 @@ function PreviewPanel({ node }: PreviewPanelProps) {
       </div>
 
       {/* body */}
-      <div className="flex-1 overflow-y-auto px-6 py-5">
-        {node.text ? (
-          <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{node.text}</p>
+      <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+        {/* LLM-generated summary — clean and prominent */}
+        {summary && (
+          <div className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3">
+            <p className="text-xs font-semibold text-blue-600 uppercase tracking-wide mb-1.5">Summary</p>
+            <p className="text-sm text-slate-700 leading-relaxed">{summary}</p>
+          </div>
+        )}
+
+        {/* Raw extracted text */}
+        {rawText ? (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Source Text</p>
+            <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{rawText}</p>
+          </div>
         ) : (
-          <p className="text-sm text-slate-500 italic">No text available for this section.</p>
+          !summary && (
+            <p className="text-sm text-slate-500 italic">No text available for this section.</p>
+          )
         )}
       </div>
     </motion.div>

@@ -205,6 +205,9 @@ async def upload_document(
         elif rag_mode == "graph":
             from app.workers.graph_tasks import build_document_graph
             build_document_graph.delay(str(doc.id))
+        elif rag_mode == "openkb":
+            from app.workers.openkb_tasks import build_openkb_pages
+            build_openkb_pages.delay(str(doc.id))
         else:
             from app.workers.tree_tasks import build_document_tree
             build_document_tree.delay(str(doc.id))

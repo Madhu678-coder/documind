@@ -19,6 +19,7 @@ celery_app.conf.update(
         "app.workers.index_tasks.*": {"queue": "default"},
         "app.workers.wiki_tasks.*": {"queue": "default"},
         "app.workers.graph_tasks.*": {"queue": "default"},
+        "app.workers.openkb_tasks.*": {"queue": "default"},
         "app.workers.eval_tasks.*": {"queue": "eval_queue"},
         "app.workers.maintenance_tasks.*": {"queue": "default"},
     },
@@ -28,3 +29,15 @@ celery_app.conf.update(
         "eval_queue": {"exchange": "eval_queue", "routing_key": "eval_queue"},
     },
 )
+
+# Explicitly import all task modules so Celery registers them on worker startup.
+# Without this, tasks added after the initial celery_app creation are not discovered.
+celery_app.autodiscover_tasks([
+    "app.workers.tree_tasks",
+    "app.workers.index_tasks",
+    "app.workers.wiki_tasks",
+    "app.workers.graph_tasks",
+    "app.workers.openkb_tasks",
+    "app.workers.eval_tasks",
+    "app.workers.maintenance_tasks",
+])

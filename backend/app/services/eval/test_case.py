@@ -128,14 +128,63 @@ async def build_test_case(message_id: str | uuid.UUID, db_session: Any) -> Any:
         # Vector RAG path: node_ids are DocumentChunk UUIDs — look them up directly
         if unresolved_ids:
             chunk_uuids = [uuid.UUID(nid) for nid in unresolved_ids if _is_valid_uuid(nid)]
+            resolved_chunk_ids: set[str] = set()
             if chunk_uuids:
                 from app.models.document_chunk import DocumentChunk
                 chunks_result = await db_session.execute(
                     select(DocumentChunk).where(DocumentChunk.id.in_(chunk_uuids))
                 )
                 for chunk in chunks_result.scalars().all():
+                    resolved_chunk_ids.add(str(chunk.id))
                     if chunk.text:
                         retrieval_context.append(chunk.text)
+            unresolved_ids = [nid for nid in unresolved_ids if nid not in resolved_chunk_ids]
+
+        # Wiki / OpenKB RAG paths: node_ids are WikiPage / OpenKBPage UUIDs
+        if unresolved_ids:
+            candidate_uuids = [uuid.UUID(nid) for nid in unresolved_ids if _is_valid_uuid(nid)]
+            resolved_page_ids: set[str] = set()
+            if candidate_uuids:
+                from app.models.wiki_page import WikiPage
+                from app.models.openkb_page import OpenKBPage
+
+                wiki_result = await db_session.execute(
+                    select(WikiPage).where(WikiPage.id.in_(candidate_uuids))
+                )
+                for page in wiki_result.scalars().all():
+                    resolved_page_ids.add(str(page.id))
+                    if page.content:
+                        retrieval_context.append(page.content)
+
+                openkb_result = await db_session.execute(
+                    select(OpenKBPage).where(OpenKBPage.id.in_(candidate_uuids))
+                )
+                for page in openkb_result.scalars().all():
+                    resolved_page_ids.add(str(page.id))
+                    if page.content:
+                        retrieval_context.append(page.content)
+            unresolved_ids = [nid for nid in unresolved_ids if nid not in resolved_page_ids]
+
+        # GraphRAG path: node_ids are entity names, scoped to the session's KB
+        if unresolved_ids:
+            from app.models.chat_session import ChatSession
+            from app.models.graph_node import GraphNode
+
+            session_result = await db_session.execute(
+                select(ChatSession).where(ChatSession.id == assistant_msg.session_id)
+            )
+            chat_session: ChatSession | None = session_result.scalar_one_or_none()
+            if chat_session is not None:
+                graph_result = await db_session.execute(
+                    select(GraphNode).where(
+                        GraphNode.kb_id == chat_session.kb_id,
+                        GraphNode.name.in_(unresolved_ids),
+                    )
+                )
+                for node in graph_result.scalars().all():
+                    text_val = node.description or node.name
+                    if text_val:
+                        retrieval_context.append(text_val)
 
     try:
         import sys

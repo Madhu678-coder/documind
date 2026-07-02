@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     libpq-dev \
     curl \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

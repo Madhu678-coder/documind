@@ -11,8 +11,6 @@ from celery import Task
 from celery.exceptions import MaxRetriesExceededError
 
 from app.workers.celery_app import celery_app
-from app.core.database import AsyncSessionLocal
-from app.services.document.extractor import extract_text
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +90,60 @@ async def _build_tree_async(document_id: str) -> dict:
             if doc is None:
                 raise ValueError(f"Document {document_id} not found")
 
-            # Extract text
-            text = extract_text(doc.file_path, doc.file_type)
-
-            # Resolve LLM provider from workspace config (falls back to Bedrock)
+            # Resolve LLM provider and use the PageIndex pipeline
             from app.services.llm.factory import get_llm_provider
             from app.services.pageindex.tree_builder import build_tree as _build_tree_via_builder
             provider = await get_llm_provider(doc.workspace_id, db)
 
-            # Use tree_builder for the tree (handles chunking for large docs)
-            tree_json = await _build_tree_via_builder(
-                doc.file_path, doc.file_type, doc.filename, provider, doc_id=document_id,
+            # ── Download file from S3 to a local temp path if needed ──────────
+            # page_extractor uses pymupdf/markitdown which require a real path.
+            # When S3_BUCKET is set, doc.file_path is an S3 key, not a local path.
+            import tempfile
+            import os as _os
+            actual_file_path = doc.file_path
+            temp_path: str | None = None
+
+            if settings.s3_bucket:
+                try:
+                    from aiobotocore.session import get_session as _get_session
+                    _session = _get_session()
+                    _client_kwargs: dict = {"region_name": settings.aws_region}
+                    if settings.aws_endpoint_url:
+                        _client_kwargs["endpoint_url"] = settings.aws_endpoint_url
+                    async with _session.create_client("s3", **_client_kwargs) as _s3:
+                        _obj = await _s3.get_object(Bucket=settings.s3_bucket, Key=doc.file_path)
+                        _file_bytes = await _obj["Body"].read()
+                    _suffix = f".{doc.file_type.lower()}" if doc.file_type else ""
+                    with tempfile.NamedTemporaryFile(mode="wb", suffix=_suffix, delete=False) as _tmp:
+                        _tmp.write(_file_bytes)
+                        temp_path = _tmp.name
+                    actual_file_path = temp_path
+                    logger.info(
+                        "Downloaded file from S3 to temp path",
+                        extra={"s3_key": doc.file_path, "temp": temp_path},
+                    )
+                except Exception as _exc:
+                    logger.error("S3 download failed", extra={"error": str(_exc)})
+                    raise
+
+            try:
+                tree_json, source_pages = await _build_tree_via_builder(
+                    file_path=actual_file_path,
+                    file_type=doc.file_type,
+                    filename=doc.filename,
+                    llm=provider,
+                    doc_id=document_id,
+                )
+            finally:
+                if temp_path and _os.path.exists(temp_path):
+                    _os.unlink(temp_path)
+                    logger.debug("Removed temp file", extra={"path": temp_path})
+
+            # Generate insights from first page content (no extra LLM call for full text)
+            first_pages_text = " ".join(
+                p.get("content", "") for p in (source_pages[:5] if source_pages else [])
             )
-            # Generate insights separately (summary only needs a representative excerpt)
-            insights = await _generate_insights(provider, text, doc.filename)
+            insights = await _generate_insights(provider, first_pages_text or "", doc.filename)
 
             # Persist tree
             existing = await db.execute(
@@ -117,6 +155,8 @@ async def _build_tree_async(document_id: str) -> dict:
                 doc_tree = DocumentTree(
                     document_id=doc_uuid,
                     tree_json=tree_json,
+                    source_pages=source_pages,
+                    page_count=len(source_pages) if source_pages else None,
                     llm_model_used=provider.model,
                     token_count=0,
                     **insights,
@@ -124,6 +164,8 @@ async def _build_tree_async(document_id: str) -> dict:
                 db.add(doc_tree)
             else:
                 doc_tree.tree_json = tree_json
+                doc_tree.source_pages = source_pages
+                doc_tree.page_count = len(source_pages) if source_pages else None
                 doc_tree.llm_model_used = provider.model
                 for k, v in insights.items():
                     setattr(doc_tree, k, v)
@@ -139,111 +181,6 @@ async def _build_tree_async(document_id: str) -> dict:
 
     logger.info("Document tree built successfully", extra={"document_id": document_id})
     return {"document_id": document_id, "status": "ready"}
-
-
-async def _generate_tree_and_insights(provider, text: str, filename: str) -> tuple[dict, dict]:
-    """
-    Generate both tree structure and insights in a single LLM call for better performance.
-    Returns (tree_json, insights_dict).
-    """
-    system_prompt = (
-        "You are a document analysis assistant. Analyze the document and return a JSON object with two keys:\n"
-        "1. 'tree': hierarchical structure with nodes (node_id, title, page_start, page_end, depth, text, children)\n"
-        "2. 'insights': object with executive_summary (string), key_entities (object with people/organizations/dates/amounts arrays), "
-        "document_tags (array), complexity_score (float 0.0-1.0)\n"
-        "Return ONLY valid JSON, no explanation."
-    )
-    
-    messages = [
-        {
-            "role": "user",
-            "content": f"Document: {filename}\n\n{text[:8000]}",  # truncate for token limits
-        }
-    ]
-
-    try:
-        response = await provider.complete(messages, system_prompt=system_prompt)
-        
-        # Parse JSON from LLM response
-        content = response.content.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        
-        combined_data = json.loads(content)
-        
-        # Extract tree and insights
-        tree_data = combined_data.get("tree", {})
-        insights_raw = combined_data.get("insights", {})
-        
-        # Validate tree structure
-        if not tree_data or "nodes" not in tree_data:
-            raise ValueError("Invalid tree structure")
-        
-        insights = {
-            "executive_summary": insights_raw.get("executive_summary", f"Summary of {filename}"),
-            "key_entities": insights_raw.get("key_entities", {"people": [], "organizations": [], "dates": [], "amounts": []}),
-            "document_tags": insights_raw.get("document_tags", ["General"]),
-            "complexity_score": float(insights_raw.get("complexity_score", 0.5)),
-        }
-        
-        return tree_data, insights
-        
-    except Exception as exc:
-        logger.warning("Combined generation failed, using fallback", extra={"error": str(exc)})
-        # Fallback to separate calls
-        tree_data = await _generate_tree(provider, text, filename)
-        insights = await _generate_insights(provider, text, filename)
-        return tree_data, insights
-
-
-async def _generate_tree(provider, text: str, filename: str) -> dict:
-    """Send document text to LLM and parse hierarchical tree JSON."""
-    system_prompt = (
-        "You are a document structure analyzer. Given document text, produce a hierarchical "
-        "JSON tree representing the document's structure. Each node must have: "
-        "node_id (string), title (string), page_start (int), page_end (int), "
-        "depth (int, starting at 1), text (string excerpt), children (array). "
-        "Return ONLY valid JSON, no explanation."
-    )
-    messages = [
-        {
-            "role": "user",
-            "content": f"Document: {filename}\n\n{text[:8000]}",  # truncate for token limits
-        }
-    ]
-
-    response = await provider.complete(messages, system_prompt=system_prompt)
-
-    # Parse JSON from LLM response
-    try:
-        # Strip markdown code fences if present
-        content = response.content.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        tree_data = json.loads(content)
-    except (json.JSONDecodeError, IndexError):
-        # Fallback: create minimal tree structure
-        tree_data = {
-            "doc_id": "unknown",
-            "title": filename,
-            "nodes": [
-                {
-                    "node_id": "n1",
-                    "title": "Full Document",
-                    "page_start": 1,
-                    "page_end": 1,
-                    "depth": 1,
-                    "text": text[:500],
-                    "children": [],
-                }
-            ],
-        }
-
-    return tree_data
 
 
 async def _generate_insights(provider, text: str, filename: str) -> dict:
