@@ -34,10 +34,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ~20,000 tokens ≈ 15,000 chars (conservative estimate of 4 chars/token)
-_CHUNK_CHARS = 15_000
-# Overlap between consecutive chunks so sections near boundaries are captured
-_CHUNK_OVERLAP_CHARS = 1_500
+# ~20,000 tokens per chunk (mirrors Vectify PageIndex default)
+_MAX_TOKENS_PER_CHUNK = 20_000
+# Overlap: 1 page carried into the next chunk (mirrors Vectify overlap_page=1)
+_CHUNK_OVERLAP_PAGES = 1
 
 # ---------------------------------------------------------------------------
 # Exact Vectify PageIndex prompts
@@ -441,50 +441,60 @@ def _nest_sections(flat: list[dict]) -> list[dict]:
 # Token-chunk grouping (Path 2 & 3)
 # ---------------------------------------------------------------------------
 
+def _count_tokens(text: str, model: str = "gpt-4") -> int:
+    """Count real tokens using litellm (mirrors Vectify's token counting)."""
+    try:
+        import litellm
+        return litellm.token_counter(model=model, text=text)
+    except Exception:
+        # Fallback: estimate at 4 chars/token if litellm unavailable
+        return max(1, len(text) // 4)
+
+
 def _group_pages_into_chunks(
     pages: list[dict],
-    max_chars: int = _CHUNK_CHARS,
-    overlap_chars: int = _CHUNK_OVERLAP_CHARS,
+    max_tokens: int = _MAX_TOKENS_PER_CHUNK,
+    overlap_pages: int = _CHUNK_OVERLAP_PAGES,
+    model: str = "gpt-4",
 ) -> list[list[dict]]:
-    """Group pages into ~20k-token chunks for LLM processing.
+    """Group pages into ~20k-token chunks using real token counts (Vectify pattern).
 
-    Each chunk is a list of page dicts. Consecutive chunks overlap by
-    overlap_chars so that sections near chunk boundaries are captured.
-    The physical page number of the first page in a chunk is the OFFSET
-    used to convert LLM-reported chunk-local positions to global page numbers.
+    Mirrors Vectify's page_list_to_group_text():
+    1. Count actual tokens per page via litellm.token_counter()
+    2. Calculate average_tokens_per_part to balance chunk sizes evenly
+    3. Overlap by overlap_pages pages so sections near boundaries aren't missed
     """
     if not pages:
         return []
 
+    # Count real tokens for each page
+    token_lengths = [_count_tokens(p.get("content", ""), model) for p in pages]
+    total_tokens = sum(token_lengths)
+
+    if total_tokens <= max_tokens:
+        return [pages]  # everything fits in one chunk
+
+    # Vectify's balanced chunk sizing formula:
+    # average = ceil((total/num_parts + max_tokens) / 2)
+    # This prevents the last chunk being tiny by averaging the ideal and max sizes
+    import math
+    expected_parts = math.ceil(total_tokens / max_tokens)
+    average_tokens_per_part = math.ceil(((total_tokens / expected_parts) + max_tokens) / 2)
+
     chunks: list[list[dict]] = []
     current: list[dict] = []
-    current_chars = 0
-    i = 0
+    current_tokens = 0
 
-    while i < len(pages):
-        page = pages[i]
-        page_chars = len(page.get("content", ""))
-
-        # Start a new chunk if this page would exceed the limit
-        if current_chars + page_chars > max_chars and current:
+    for i, (page, page_tokens) in enumerate(zip(pages, token_lengths)):
+        if current_tokens + page_tokens > average_tokens_per_part and current:
             chunks.append(current)
-
-            # Backtrack for overlap: keep last N chars worth of pages
-            overlap_pages: list[dict] = []
-            overlap_so_far = 0
-            for prev_page in reversed(current):
-                pc = len(prev_page.get("content", ""))
-                if overlap_so_far + pc > overlap_chars:
-                    break
-                overlap_pages.insert(0, prev_page)
-                overlap_so_far += pc
-
-            current = overlap_pages
-            current_chars = overlap_so_far
+            # Overlap: carry back overlap_pages pages into next chunk
+            overlap_start = max(i - overlap_pages, 0)
+            current = pages[overlap_start:i]
+            current_tokens = sum(token_lengths[overlap_start:i])
 
         current.append(page)
-        current_chars += page_chars
-        i += 1
+        current_tokens += page_tokens
 
     if current:
         chunks.append(current)
@@ -492,7 +502,7 @@ def _group_pages_into_chunks(
     return chunks
 
 
-def _format_chunk_for_llm(chunk_pages: list[dict], max_content_chars: int = _CHUNK_CHARS) -> str:
+def _format_chunk_for_llm(chunk_pages: list[dict], max_content_chars: int = 60_000) -> str:
     """Format a chunk of pages using Vectify's <physical_index_X> tag format.
 
     Each page is wrapped with opening and closing <physical_index_X> tags so
@@ -611,9 +621,7 @@ async def _analyze_no_toc(
         if not chunk_pages:
             continue
 
-        chunk_text = _format_chunk_for_llm(chunk_pages, max_content_chars=_CHUNK_CHARS)
-
-        if chunk_idx == 0:
+        chunk_text = _format_chunk_for_llm(chunk_pages)
             # First chunk — generate initial tree
             prompt = f"Given text:\n{chunk_text}"
             system = _GENERATE_TOC_INIT
@@ -715,7 +723,7 @@ async def _analyze_toc_no_pages(
         if all(e.get("physical_index") is not None for e in toc_json):
             break
 
-        chunk_text = _format_chunk_for_llm(chunk_pages, max_content_chars=_CHUNK_CHARS)
+        chunk_text = _format_chunk_for_llm(chunk_pages)
         prompt = (
             f"Current Partial Document:\n{chunk_text}\n\n"
             f"Given Structure:\n{json.dumps(toc_json, indent=2)}"

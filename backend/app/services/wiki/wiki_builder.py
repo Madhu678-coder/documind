@@ -25,8 +25,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _WIKI_MAX_PAGES = 100
-_EXTRACT_MAX_CHARS = 100_000
-_EXTRACT_CHUNK_OVERLAP = 500
+# 25,000 tokens per chunk — leaves room for system prompt + 8192 token response
+_MAX_TOKENS_PER_CHUNK = 25_000
+# Overlap: 200 tokens carried into next chunk so topics near boundaries aren't lost
+_CHUNK_OVERLAP_TOKENS = 200
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -541,24 +543,81 @@ def _should_merge_by_context(existing_source_docs: list[str], new_doc_filename: 
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 
-def _split_into_chunks(text: str) -> list[str]:
-    """Split text into overlapping chunks of _EXTRACT_MAX_CHARS each."""
-    if len(text) <= _EXTRACT_MAX_CHARS:
+def _count_tokens(text: str, model: str = "gpt-4") -> int:
+    """Count real tokens using litellm (same as Vectify PageIndex)."""
+    try:
+        import litellm
+        return litellm.token_counter(model=model, text=text)
+    except Exception:
+        return max(1, len(text) // 4)  # fallback: estimate 4 chars/token
+
+
+def _split_into_chunks(text: str, model: str = "gpt-4") -> list[str]:
+    """Split text into token-balanced chunks using real token counts (Vectify pattern).
+
+    Mirrors Vectify's page_list_to_group_text():
+    1. Build virtual 'pages' by splitting text at paragraph boundaries
+    2. Count real tokens per segment via litellm.token_counter()
+    3. Calculate average_tokens_per_part to balance chunks evenly
+    4. Overlap by _CHUNK_OVERLAP_TOKENS tokens to preserve context at boundaries
+    """
+    if not text.strip():
+        return []
+
+    # Split text into paragraph-level segments (natural split points)
+    segments = [s.strip() for s in text.split("\n\n") if s.strip()]
+    if not segments:
         return [text]
+
+    # Count real tokens per segment
+    token_lengths = [_count_tokens(seg, model) for seg in segments]
+    total_tokens = sum(token_lengths)
+
+    if total_tokens <= _MAX_TOKENS_PER_CHUNK:
+        return [text]  # entire text fits in one chunk
+
+    # Vectify balanced chunk sizing:
+    # average = ceil((total/num_parts + max_tokens) / 2)
+    import math
+    expected_parts = math.ceil(total_tokens / _MAX_TOKENS_PER_CHUNK)
+    average_tokens_per_part = math.ceil(
+        ((total_tokens / expected_parts) + _MAX_TOKENS_PER_CHUNK) / 2
+    )
+
     chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = start + _EXTRACT_MAX_CHARS
-        if end < len(text):
-            boundary = text.rfind("\n\n", start, end)
-            if boundary > start + (_EXTRACT_MAX_CHARS // 2):
-                end = boundary
-            else:
-                boundary = text.rfind("\n", start, end)
-                if boundary > start + (_EXTRACT_MAX_CHARS // 2):
-                    end = boundary
-        chunks.append(text[start:end].strip())
-        start = max(end - _EXTRACT_CHUNK_OVERLAP, start + 1)
+    current_segs: list[str] = []
+    current_tokens = 0
+    overlap_text = ""   # text carried over from previous chunk
+    overlap_tokens = 0
+
+    for i, (seg, seg_tokens) in enumerate(zip(segments, token_lengths)):
+        if current_tokens + seg_tokens > average_tokens_per_part and current_segs:
+            # Flush current chunk (prepend overlap from previous chunk)
+            chunk_text = (overlap_text + "\n\n" if overlap_text else "") + "\n\n".join(current_segs)
+            chunks.append(chunk_text.strip())
+
+            # Calculate overlap: keep enough trailing segments to cover _CHUNK_OVERLAP_TOKENS
+            overlap_segs: list[str] = []
+            overlap_so_far = 0
+            for prev_seg, prev_tokens in zip(reversed(current_segs), reversed(token_lengths[max(0, i - len(current_segs)):i])):
+                if overlap_so_far + prev_tokens > _CHUNK_OVERLAP_TOKENS:
+                    break
+                overlap_segs.insert(0, prev_seg)
+                overlap_so_far += prev_tokens
+            overlap_text = "\n\n".join(overlap_segs)
+            overlap_tokens = overlap_so_far
+
+            current_segs = []
+            current_tokens = 0
+
+        current_segs.append(seg)
+        current_tokens += seg_tokens
+
+    # Final chunk
+    if current_segs:
+        chunk_text = (overlap_text + "\n\n" if overlap_text else "") + "\n\n".join(current_segs)
+        chunks.append(chunk_text.strip())
+
     return [c for c in chunks if c]
 
 
