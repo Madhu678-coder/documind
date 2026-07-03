@@ -1,0 +1,4 @@
+{
+  "$comment": "Unused placeholder - vite.config.ts is type-checked via the root tsconfig.json instead (types: [node]).",
+  "compilerOptions": {}
+}

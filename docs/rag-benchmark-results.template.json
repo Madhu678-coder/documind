@@ -1,0 +1,151 @@
+{
+  "$comment": "Template for a single benchmark run's raw results, matching the shape produced by rag-benchmark-suite's GET /runs/{id}/export. One file per run, saved as docs/benchmark-results/<YYYY-MM-DD>-results.json.",
+  "run_id": "2026-07-01-benchmark-001",
+  "run_date": "2026-07-01",
+  "status": "completed",
+  "error": null,
+  "dataset": {
+    "source_type": "folder_path",
+    "source_ref": "REPLACE_WITH_PATH_OR_CONNECTION_ALIAS",
+    "document_count": 0,
+    "document_names": []
+  },
+  "eval_thresholds": {
+    "faithfulness": 0.85,
+    "answer_relevancy": 0.80,
+    "contextual_precision": 0.75,
+    "contextual_recall": 0.75,
+    "hallucination": 0.15
+  },
+  "modes": [
+    {
+      "rag_mode": "pageindex",
+      "retrieval_mode": null,
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "status": "completed",
+      "error": null,
+      "ingestion": {
+        "documents_ingested": 0,
+        "documents_failed": 0,
+        "avg_ingestion_time_seconds": null,
+        "total_size_bytes": null,
+        "fallback_count": 0,
+        "fallback_note": "single-node tree fallback triggered when tree-builder LLM response was unparseable"
+      },
+      "robustness": {
+        "unanswerable_total": 0,
+        "unanswerable_handled": 0,
+        "unanswerable_handled_rate": null,
+        "note": "handled = hallucination_score stayed under threshold on a question flagged is_unanswerable, i.e. the mode refused instead of fabricating an answer"
+      },
+      "citation_metrics": {
+        "supported": true,
+        "precision_mean": null,
+        "recall_mean": null,
+        "note": "only meaningful for pageindex/vector — doc_name is a wiki-page-title/entity-name for wiki/graph/openkb, see methodology doc"
+      },
+      "queries": [
+        {
+          "question_id": "q1",
+          "question": "",
+          "expected_answer": "",
+          "is_unanswerable": false,
+          "expected_source_documents": [],
+          "actual_answer": "",
+          "node_ids_visited": [],
+          "cited_doc_names": [],
+          "citation_count": 0,
+          "citation_precision": null,
+          "citation_recall": null,
+          "latency_ms": null,
+          "eval_status": "scored",
+          "refused_correctly": null,
+          "scores": {
+            "faithfulness_score": null,
+            "faithfulness_reason": "",
+            "answer_relevancy_score": null,
+            "contextual_precision_score": null,
+            "contextual_recall_score": null,
+            "hallucination_score": null,
+            "overall_pass": null,
+            "eval_model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+          }
+        }
+      ],
+      "aggregate": {
+        "faithfulness_mean": null,
+        "answer_relevancy_mean": null,
+        "contextual_precision_mean": null,
+        "contextual_recall_mean": null,
+        "hallucination_mean": null,
+        "pass_rate": null,
+        "p50_latency_ms": null,
+        "p95_latency_ms": null
+      }
+    },
+    {
+      "rag_mode": "vector",
+      "retrieval_mode": "vector",
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "ingestion": { "documents_ingested": 0, "documents_failed": 0, "avg_ingestion_time_seconds": null, "total_size_bytes": null },
+      "robustness": { "unanswerable_total": 0, "unanswerable_handled": 0, "unanswerable_handled_rate": null },
+      "queries": [],
+      "aggregate": {}
+    },
+    {
+      "rag_mode": "vector",
+      "retrieval_mode": "fulltext",
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "ingestion": { "documents_ingested": 0, "documents_failed": 0, "avg_ingestion_time_seconds": null, "total_size_bytes": null },
+      "robustness": { "unanswerable_total": 0, "unanswerable_handled": 0, "unanswerable_handled_rate": null },
+      "queries": [],
+      "aggregate": {},
+      "$comment": "optional sub-variant, see methodology §6"
+    },
+    {
+      "rag_mode": "vector",
+      "retrieval_mode": "hybrid",
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "ingestion": { "documents_ingested": 0, "documents_failed": 0, "avg_ingestion_time_seconds": null, "total_size_bytes": null },
+      "robustness": { "unanswerable_total": 0, "unanswerable_handled": 0, "unanswerable_handled_rate": null },
+      "queries": [],
+      "aggregate": {},
+      "$comment": "optional sub-variant, see methodology §6"
+    },
+    {
+      "rag_mode": "wiki",
+      "retrieval_mode": null,
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "ingestion": { "documents_ingested": 0, "documents_failed": 0, "avg_ingestion_time_seconds": null, "total_size_bytes": null },
+      "robustness": { "unanswerable_total": 0, "unanswerable_handled": 0, "unanswerable_handled_rate": null },
+      "queries": [],
+      "aggregate": {},
+      "$comment": "test_case.py now resolves wiki page content for retrieval_context; citation doc_name is a wiki page title, not a source filename"
+    },
+    {
+      "rag_mode": "graph",
+      "retrieval_mode": null,
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "ingestion": { "documents_ingested": 0, "documents_failed": 0, "avg_ingestion_time_seconds": null, "total_size_bytes": null },
+      "robustness": { "unanswerable_total": 0, "unanswerable_handled": 0, "unanswerable_handled_rate": null },
+      "queries": [],
+      "aggregate": {},
+      "$comment": "test_case.py now resolves graph entity descriptions for retrieval_context; citation doc_name is a graph entity name, not a source filename"
+    },
+    {
+      "rag_mode": "openkb",
+      "retrieval_mode": null,
+      "kb_id": "REPLACE_WITH_KB_UUID",
+      "ingestion": { "documents_ingested": 0, "documents_failed": 0, "avg_ingestion_time_seconds": null, "total_size_bytes": null },
+      "robustness": { "unanswerable_total": 0, "unanswerable_handled": 0, "unanswerable_handled_rate": null },
+      "queries": [],
+      "aggregate": {},
+      "$comment": "test_case.py now resolves openkb page content for retrieval_context; citation doc_name is a wiki-style page title, not a source filename"
+    }
+  ],
+  "summary": {
+    "best_faithfulness": null,
+    "best_latency": null,
+    "recommendation": ""
+  }
+}

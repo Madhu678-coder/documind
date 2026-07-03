@@ -222,3 +222,92 @@ async def export_wiki_as_markdown(
             "Content-Disposition": f'attachment; filename="{kb.name.replace(" ", "_")}_wiki.md"',
         },
     )
+
+
+# ── Wiki Lint ─────────────────────────────────────────────────────────────────
+
+@router.get("/{kb_id}/wiki-pages/lint")
+async def lint_wiki(
+    kb_id: uuid.UUID,
+    run_llm_checks: bool = True,
+    format: str = "json",   # "json" | "markdown"
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run 7 structural health checks on the wiki knowledge base.
+
+    Checks:
+      1. broken_links       — [[wikilinks]] pointing to non-existent pages
+      2. orphan_pages       — pages with zero inbound links
+      3. missing_backlinks  — A links to B but B doesn't link back
+      4. sparse_articles    — pages under 200 words (likely incomplete)
+      5. stale_articles     — pages whose source documents were deleted
+      6. source_coverage    — documents with no corresponding wiki pages
+      7. contradictions     — conflicting claims (LLM-based, set run_llm_checks=false to skip)
+
+    Returns JSON report or markdown report based on `format` query param.
+    """
+    from fastapi.responses import PlainTextResponse as _PlainText
+    from app.services.wiki.wiki_lint import run_lint
+    from app.services.llm.factory import get_llm_provider
+
+    await _get_kb_or_403(kb_id, current_user.workspace_id, db)
+
+    llm = None
+    if run_llm_checks:
+        try:
+            llm = await get_llm_provider(current_user.workspace_id, db)
+        except Exception:
+            run_llm_checks = False  # fall back to structural-only
+
+    report = await run_lint(kb_id, db, llm=llm, run_llm_checks=run_llm_checks)
+
+    if format == "markdown":
+        return _PlainText(
+            content=report.to_markdown(),
+            media_type="text/markdown",
+        )
+
+    return report.to_dict()
+
+
+# ── Index & Log page access ───────────────────────────────────────────────────
+
+@router.get("/{kb_id}/wiki-pages/index", response_model=WikiPageDetailOut)
+async def get_wiki_index(
+    kb_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the master index page for the wiki KB."""
+    from app.services.wiki.wiki_builder import _INDEX_TITLE
+    await _get_kb_or_403(kb_id, current_user.workspace_id, db)
+
+    result = await db.execute(
+        select(WikiPage).where(WikiPage.kb_id == kb_id, WikiPage.title == _INDEX_TITLE)
+    )
+    page = result.scalar_one_or_none()
+    if page is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Wiki index not yet built. Upload a document first.")
+    return _page_to_detail(page)
+
+
+@router.get("/{kb_id}/wiki-pages/log", response_model=WikiPageDetailOut)
+async def get_wiki_log(
+    kb_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the append-only build log for the wiki KB."""
+    from app.services.wiki.wiki_builder import _LOG_TITLE
+    await _get_kb_or_403(kb_id, current_user.workspace_id, db)
+
+    result = await db.execute(
+        select(WikiPage).where(WikiPage.kb_id == kb_id, WikiPage.title == _LOG_TITLE)
+    )
+    page = result.scalar_one_or_none()
+    if page is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Wiki build log not yet available. Upload a document first.")
+    return _page_to_detail(page)

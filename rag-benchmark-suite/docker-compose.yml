@@ -1,0 +1,73 @@
+version: "3.9"
+
+# Standalone RAG Benchmark Suite — runs entirely on its own ports, separate
+# from the main DocuMind stack (which stays on 5180/8010/5440/6380). This
+# service talks to the main DocuMind API over the network; it does not share
+# a database or codebase with it.
+#
+# Bring the main DocuMind stack up first (`make up` in the repo root), then:
+#   cp .env.example .env   # fill in BENCHMARK_DOCUMIND_ADMIN_EMAIL/PASSWORD
+#   docker compose up --build
+#
+# UI:  http://localhost:5190
+# API: http://localhost:8020/docs
+
+services:
+  benchmark-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: benchmark
+      POSTGRES_PASSWORD: benchmark
+      POSTGRES_DB: rag_benchmark
+    ports:
+      - "5441:5432"
+    volumes:
+      - benchmark_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmark"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  benchmark-api:
+    build: ./api
+    ports:
+      - "8020:8020"
+    environment:
+      BENCHMARK_DATABASE_URL: postgresql+asyncpg://benchmark:benchmark@benchmark-postgres:5432/rag_benchmark
+      BENCHMARK_DOCUMIND_API_BASE_URL: ${BENCHMARK_DOCUMIND_API_BASE_URL:-http://host.docker.internal:8010}
+      BENCHMARK_DOCUMIND_ADMIN_EMAIL: ${BENCHMARK_DOCUMIND_ADMIN_EMAIL:-}
+      BENCHMARK_DOCUMIND_ADMIN_PASSWORD: ${BENCHMARK_DOCUMIND_ADMIN_PASSWORD:-}
+      BENCHMARK_DATASET_ROOT: /data
+      BENCHMARK_CORS_ORIGINS: http://localhost:5190
+      # Confluence — only needed if you use the confluence source type
+      BENCHMARK_CONFLUENCE_BASE_URL: ${BENCHMARK_CONFLUENCE_BASE_URL:-}
+      BENCHMARK_CONFLUENCE_EMAIL: ${BENCHMARK_CONFLUENCE_EMAIL:-}
+      BENCHMARK_CONFLUENCE_API_TOKEN: ${BENCHMARK_CONFLUENCE_API_TOKEN:-}
+      # Google Drive — only needed if you use the gdrive source type
+      BENCHMARK_GDRIVE_SERVICE_ACCOUNT_JSON: ${BENCHMARK_GDRIVE_SERVICE_ACCOUNT_JSON:-}
+      # SharePoint/OneDrive — only needed if you use the sharepoint source type
+      BENCHMARK_AZURE_TENANT_ID: ${BENCHMARK_AZURE_TENANT_ID:-}
+      BENCHMARK_AZURE_CLIENT_ID: ${BENCHMARK_AZURE_CLIENT_ID:-}
+      BENCHMARK_AZURE_CLIENT_SECRET: ${BENCHMARK_AZURE_CLIENT_SECRET:-}
+    volumes:
+      # Point this at your dataset folder — same folder gets used for every RAG mode.
+      - ${BENCHMARK_DATASET_HOST_PATH:-./datasets}:/data:ro
+      # Drop a Google service-account key at ./secrets/gdrive-service-account.json
+      # if you use the gdrive source type — see .env.example.
+      - ./secrets:/secrets:ro
+    depends_on:
+      benchmark-postgres:
+        condition: service_healthy
+
+  benchmark-web:
+    build: ./web
+    ports:
+      - "5190:5190"
+    environment:
+      VITE_BENCHMARK_API_URL: http://benchmark-api:8020
+    depends_on:
+      - benchmark-api
+
+volumes:
+  benchmark_postgres_data:

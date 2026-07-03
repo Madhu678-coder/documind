@@ -294,9 +294,11 @@ async def send_message(
             .order_by(WikiPage.title)
         )
         wiki_pages = wiki_result.scalars().all()
-        nav_result = await navigate_wiki(body.content, wiki_pages, llm, history=history)
-        selected_pages = [p for p in wiki_pages if str(p.id) in nav_result.selected_page_ids]
-        answer = await generate_answer_from_wiki(body.content, selected_pages, history, llm, all_pages=wiki_pages)
+        # Filter out structural pages from navigation
+        nav_pages = [p for p in wiki_pages if p.page_type not in ("index", "log")]
+        nav_result = await navigate_wiki(body.content, nav_pages, llm, history=history)
+        selected_pages = [p for p in nav_pages if str(p.id) in nav_result.selected_page_ids]
+        answer = await generate_answer_from_wiki(body.content, selected_pages, history, llm, all_pages=nav_pages)
 
         reasoning_trace_data = {
             "mode": "wiki",
@@ -305,6 +307,55 @@ async def send_message(
             "confidence": nav_result.confidence,
         }
         node_ids_visited = nav_result.selected_page_ids
+
+        # ── Q&A Compounding (Karpathy pattern) ───────────────────────────────
+        # File the answered question as a qa/ wiki page so future queries benefit.
+        # Only file non-trivial answers with sufficient confidence.
+        qa_compounding = (kb.settings or {}).get("qa_compounding", True)
+        if qa_compounding and nav_result.confidence >= 0.6 and len(body.content.split()) >= 4:
+            try:
+                from app.services.wiki.wiki_builder import (
+                    file_qa_answer, add_frontmatter_to_page, _INDEX_TITLE, _LOG_TITLE,
+                    build_index_content, build_log_entry, prepend_log_entry,
+                )
+                selected_titles = [p.title for p in selected_pages]
+                qa_page_data = await file_qa_answer(llm, body.content, answer.content, selected_titles)
+                qa_title_key = qa_page_data["title"].lower()
+                existing_qa = next(
+                    (p for p in wiki_pages if p.title.lower() == qa_title_key), None
+                )
+                if not existing_qa:
+                    content_with_fm = add_frontmatter_to_page(
+                        qa_page_data["content"], qa_page_data["title"],
+                        "qa", [str(p.id) for p in selected_pages],
+                    )
+                    new_qa = WikiPage(
+                        kb_id=session.kb_id,
+                        workspace_id=current_user.workspace_id,
+                        title=qa_page_data["title"],
+                        summary=qa_page_data.get("summary"),
+                        content=content_with_fm,
+                        page_type="qa",
+                        source_doc_ids=[str(p.id) for p in selected_pages],
+                        related_titles=selected_titles,
+                        llm_model_used=llm.model if hasattr(llm, "model") else None,
+                    )
+                    db.add(new_qa)
+                    # Update index after adding qa page
+                    all_updated = [p for p in wiki_pages if p.page_type not in ("index", "log")] + [new_qa]
+                    index_pg = next((p for p in wiki_pages if p.title == _INDEX_TITLE), None)
+                    log_pg = next((p for p in wiki_pages if p.title == _LOG_TITLE), None)
+                    if index_pg:
+                        index_pg.content = build_index_content(all_updated)
+                    if log_pg:
+                        entry = build_log_entry(f"query | filed Q&A", {
+                            "question": body.content[:80],
+                            "confidence": nav_result.confidence,
+                        })
+                        log_pg.content = prepend_log_entry(log_pg.content, entry)
+                    logger.info("Q&A page filed", extra={"title": qa_page_data["title"][:60]})
+            except Exception as _qa_exc:
+                logger.warning("Q&A compounding failed (non-fatal)", extra={"error": str(_qa_exc)})
 
         assistant_msg = ChatMessage(
             session_id=session_id,
